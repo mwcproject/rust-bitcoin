@@ -26,8 +26,8 @@ bitcoin_hashes = "0.7"
 bitcoinconsensus = { version = "0.16", optional = true }
 
 [dependencies.grin_secp256k1zkp]
-version = "0.7.7"
-path = "../rust-secp_fork"
+git = "https://github.com/jaspervdm/rust-secp256k1-zkp"
+branch = "master"
 features = ["bullet-proof-sizing"]
 
 [dependencies.serde]
