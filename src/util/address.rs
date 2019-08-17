@@ -18,7 +18,7 @@
 //! # Example: creating a new address from a randomly-generated key pair
 //!
 //! ```rust
-//! extern crate secp256k1;
+//! extern crate secp256k1zkp as secp256k1;
 //! extern crate bitcoin;
 //!
 //! use bitcoin::network::constants::Network;
@@ -32,7 +32,7 @@
 //!     let s = Secp256k1::new();
 //!     let public_key = key::PublicKey {
 //!         compressed: true,
-//!         key: s.generate_keypair(&mut thread_rng()).1,
+//!         key: s.generate_keypair(&mut thread_rng()).unwrap().1,
 //!     };
 //!
 //!     // Generate pay-to-pubkey-hash address
