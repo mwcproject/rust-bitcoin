@@ -31,7 +31,6 @@ serde_derive = "1"
 
 [dependencies.grin_secp256k1zkp]
 git = "https://github.com/mwcproject/rust-secp256k1-zkp"
-branch = "master"
 version = "0.7.7"
 features = ["bullet-proof-sizing"]
 
