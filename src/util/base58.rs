@@ -53,7 +53,7 @@ impl fmt::Display for Error {
 }
 
 impl error::Error for Error {
-    fn cause(&self) -> Option<&error::Error> { None }
+    fn cause(&self) -> Option<&dyn error::Error> { None }
     fn description(&self) -> &'static str {
         match *self {
             Error::BadByte(_) => "invalid b58 character",

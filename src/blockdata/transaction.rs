@@ -139,7 +139,7 @@ impl ::std::error::Error for ParseOutPointError {
         }
     }
 
-    fn cause(&self) -> Option<&::std::error::Error> {
+    fn cause(&self) -> Option<&dyn std::error::Error> {
         match *self {
             ParseOutPointError::Txid(ref e) => Some(e),
             ParseOutPointError::Vout(ref e) => Some(e),

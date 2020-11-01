@@ -115,7 +115,7 @@ impl fmt::Display for Error {
 }
 
 impl error::Error for Error {
-    fn cause(&self) -> Option<&error::Error> {
+    fn cause(&self) -> Option<&dyn error::Error> {
         match *self {
             Error::Io(ref e) => Some(e),
             Error::Base58(ref e) => Some(e),
@@ -406,9 +406,9 @@ impl VarInt {
     #[inline]
     pub fn len(&self) -> usize {
         match self.0 {
-            0...0xFC             => { 1 }
-            0xFD...0xFFFF        => { 3 }
-            0x10000...0xFFFFFFFF => { 5 }
+            0..=0xFC             => { 1 }
+            0xFD..=0xFFFF        => { 3 }
+            0x10000..=0xFFFFFFFF => { 5 }
             _                    => { 9 }
         }
     }
@@ -418,16 +418,16 @@ impl Encodable for VarInt {
     #[inline]
     fn consensus_encode<S: io::Write>(&self, mut s: S) -> Result<usize, Error> {
         match self.0 {
-            0...0xFC => {
+            0..=0xFC => {
                 (self.0 as u8).consensus_encode(s)?;
                 Ok(1)
             },
-            0xFD...0xFFFF => {
+            0xFD..=0xFFFF => {
                 s.emit_u8(0xFD)?;
                 (self.0 as u16).consensus_encode(s)?;
                 Ok(3)
             },
-            0x10000...0xFFFFFFFF => {
+            0x10000..=0xFFFFFFFF => {
                 s.emit_u8(0xFE)?;
                 (self.0 as u32).consensus_encode(s)?;
                 Ok(5)
