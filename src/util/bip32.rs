@@ -423,7 +423,7 @@ impl ExtendedPrivKey {
                 compressed: true,
                 network: network,
                 key: secp256k1::SecretKey::from_slice(
-                    &Secp256k1::without_caps(), &hmac_result[..32]
+                    &hmac_result[..32]
                 ).map_err(Error::Ecdsa)?,
             },
             chain_code: ChainCode::from(&hmac_result[32..]),
@@ -452,7 +452,7 @@ impl ExtendedPrivKey {
         match i {
             ChildNumber::Normal {..} => {
                 // Non-hardened key: compute public data and use that
-                hmac_engine.input(&PublicKey::from_private_key(secp, &self.private_key).key.serialize_vec(&Secp256k1::without_caps(), true)[..]);
+                hmac_engine.input(&PublicKey::from_private_key(secp, &self.private_key).key.serialize_vec(true)[..]);
             }
             ChildNumber::Hardened {..} => {
                 // Hardened key: use only secret data to prevent public derivation
@@ -467,9 +467,9 @@ impl ExtendedPrivKey {
         let mut sk = PrivateKey {
             compressed: true,
             network: self.network,
-            key: secp256k1::SecretKey::from_slice(secp, &hmac_result[..32]).map_err(Error::Ecdsa)?,
+            key: secp256k1::SecretKey::from_slice(&hmac_result[..32]).map_err(Error::Ecdsa)?,
         };
-        sk.key.add_assign(secp, &self.private_key.key).map_err(Error::Ecdsa)?;
+        sk.key.add_assign(&self.private_key.key).map_err(Error::Ecdsa)?;
 
         Ok(ExtendedPrivKey {
             network: self.network,
@@ -521,14 +521,14 @@ impl ExtendedPubKey {
     }
 
     /// Compute the scalar tweak added to this key to get a child key
-    pub fn ckd_pub_tweak(&self, secp: &Secp256k1, i: ChildNumber) -> Result<(PrivateKey, ChainCode), Error> {
+    pub fn ckd_pub_tweak(&self, i: ChildNumber) -> Result<(PrivateKey, ChainCode), Error> {
         match i {
             ChildNumber::Hardened {..} => {
                 Err(Error::CannotDeriveFromHardenedKey)
             }
             ChildNumber::Normal { index: n } => {
                 let mut hmac_engine: HmacEngine<sha512::Hash> = HmacEngine::new(&self.chain_code[..]);
-                hmac_engine.input(&self.public_key.key.serialize_vec(secp, true)[..]);
+                hmac_engine.input(&self.public_key.key.serialize_vec(true)[..]);
                 let mut be_n = [0; 4];
                 BigEndian::write_u32(&mut be_n, n);
                 hmac_engine.input(&be_n);
@@ -538,7 +538,7 @@ impl ExtendedPubKey {
                 let private_key = PrivateKey {
                     compressed: true,
                     network: self.network,
-                    key: secp256k1::SecretKey::from_slice(secp, &hmac_result[..32])?,
+                    key: secp256k1::SecretKey::from_slice(&hmac_result[..32])?,
                 };
                 let chain_code = ChainCode::from(&hmac_result[32..]);
                 Ok((private_key, chain_code))
@@ -552,7 +552,7 @@ impl ExtendedPubKey {
         secp: &Secp256k1,
         i: ChildNumber,
     ) -> Result<ExtendedPubKey, Error> {
-        let (sk, chain_code) = self.ckd_pub_tweak(secp, i)?;
+        let (sk, chain_code) = self.ckd_pub_tweak(i)?;
         let mut pk = self.public_key.clone();
         pk.key.add_exp_assign(secp, &sk.key).map_err(Error::Ecdsa)?;
 
@@ -629,7 +629,7 @@ impl FromStr for ExtendedPrivKey {
                 compressed: true,
                 network: network,
                 key: secp256k1::SecretKey::from_slice(
-                    &Secp256k1::without_caps(), &data[46..78]
+                    &data[46..78]
                 ).map_err(|e|
                         base58::Error::Other(e.to_string())
                 )?,
@@ -651,7 +651,7 @@ impl fmt::Display for ExtendedPubKey {
         BigEndian::write_u32(&mut ret[9..13], u32::from(self.child_number));
 
         ret[13..45].copy_from_slice(&self.chain_code[..]);
-        ret[45..78].copy_from_slice(&self.public_key.key.serialize_vec(&Secp256k1::without_caps(), true)[..]);
+        ret[45..78].copy_from_slice(&self.public_key.key.serialize_vec(true)[..]);
         fmt.write_str(&base58::check_encode_slice(&ret[..]))
     }
 }
@@ -696,7 +696,7 @@ mod tests {
     use std::str::FromStr;
     use std::string::ToString;
 
-    use secp256k1::{self, Secp256k1};
+    use secp256k1::Secp256k1;
     use hex::decode as hex_decode;
 
     use network::constants::Network::{self, Bitcoin};

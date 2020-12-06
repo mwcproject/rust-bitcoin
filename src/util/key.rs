@@ -39,9 +39,9 @@ impl PublicKey {
     /// Write the public key into a writer
     pub fn write_into<W: io::Write>(&self, mut writer: W) {
         let write_res: io::Result<()> = if self.compressed {
-            writer.write_all(&self.key.serialize_vec(&Secp256k1::without_caps(), true).to_vec())
+            writer.write_all(&self.key.serialize_vec(true).to_vec())
         } else {
-            writer.write_all(&self.key.serialize_vec(&Secp256k1::without_caps(), false).to_vec())
+            writer.write_all(&self.key.serialize_vec( false).to_vec())
         };
         debug_assert!(write_res.is_ok());
     }
@@ -63,7 +63,7 @@ impl PublicKey {
 
         Ok(PublicKey {
             compressed: compressed,
-            key: secp256k1::PublicKey::from_slice(&Secp256k1::without_caps(), data)?,
+            key: secp256k1::PublicKey::from_slice(data)?,
         })
     }
 
@@ -76,11 +76,11 @@ impl PublicKey {
 impl fmt::Display for PublicKey {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if self.compressed {
-            for ch in &self.key.serialize_vec(&Secp256k1::without_caps(), true)[..] {
+            for ch in &self.key.serialize_vec(true)[..] {
                 write!(f, "{:02x}", ch)?;
             }
         } else {
-            for ch in &self.key.serialize_vec(&Secp256k1::without_caps(), false)[..] {
+            for ch in &self.key.serialize_vec(false)[..] {
                 write!(f, "{:02x}", ch)?;
             }
         }
@@ -92,7 +92,7 @@ impl FromStr for PublicKey {
     type Err = encode::Error;
     fn from_str(s: &str) -> Result<PublicKey, encode::Error> {
         let data = hex_bytes(s)?;
-        let key = secp256k1::PublicKey::from_slice(&Secp256k1::without_caps(), &data)?;
+        let key = secp256k1::PublicKey::from_slice(&data)?;
         Ok(PublicKey {
             key: key,
             compressed: s.len() == 66
@@ -169,7 +169,7 @@ impl PrivateKey {
         Ok(PrivateKey {
             compressed: compressed,
             network: network,
-            key: secp256k1::SecretKey::from_slice(&Secp256k1::without_caps(), &data[1..33])?,
+            key: secp256k1::SecretKey::from_slice(&data[1..33])?,
         })
     }
 }

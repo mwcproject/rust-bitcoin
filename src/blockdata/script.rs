@@ -627,9 +627,9 @@ impl Builder {
     /// Pushes a public key
     pub fn push_key(self, key: &PublicKey) -> Builder {
         if key.compressed {
-            self.push_slice(&key.key.serialize_vec(&secp256k1zkp::Secp256k1::without_caps(), true)[..])
+            self.push_slice(&key.key.serialize_vec(true)[..])
         } else {
-            self.push_slice(&key.key.serialize_vec(&secp256k1zkp::Secp256k1::without_caps(), false)[..])
+            self.push_slice(&key.key.serialize_vec(false)[..])
         }
     }
 
