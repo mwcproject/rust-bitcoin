@@ -19,13 +19,13 @@
 //! also defines (de)serialization routines for many primitives.
 //!
 
-use std::{io, iter, mem, fmt};
+use std::{fmt, io, iter, mem, str};
 use std::borrow::Cow;
 use std::io::Cursor;
 
 use blockdata::block;
 use blockdata::transaction;
-use network::address::Address;
+use network::address::{Address, AddrV2Message};
 use network::message_network;
 use network::message_blockdata;
 use network::message_filter;
@@ -33,25 +33,37 @@ use consensus::encode::{CheckedData, Decodable, Encodable, VarInt};
 use consensus::{encode, serialize};
 use consensus::encode::MAX_VEC_SIZE;
 
+/// The maximum number of [Inventory] items in an `inv` message.
+///
+/// This limit is not currently enforced by this implementation.
+pub const MAX_INV_SIZE: usize = 50_000;
+
 /// Serializer for command string
 #[derive(PartialEq, Eq, Clone, Debug)]
 pub struct CommandString(Cow<'static, str>);
 
+impl CommandString {
+    /// Convert from various string types into a [CommandString].
+    ///
+    /// Supported types are:
+    /// - `&'static str`
+    /// - `String`
+    ///
+    /// Returns an empty error if and only if the string is
+    /// larger than 12 characters in length.
+    pub fn try_from<S: Into<Cow<'static, str>>>(s: S) -> Result<CommandString, ()> {
+        let cow = s.into();
+        if cow.as_ref().len() > 12 {
+            Err(())
+        } else {
+            Ok(CommandString(cow))
+        }
+    }
+}
+
 impl fmt::Display for CommandString {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.write_str(self.0.as_ref())
-    }
-}
-
-impl From<&'static str> for CommandString {
-    fn from(f: &'static str) -> Self {
-        CommandString(f.into())
-    }
-}
-
-impl From<String> for CommandString {
-    fn from(f: String) -> Self {
-        CommandString(f.into())
     }
 }
 
@@ -66,12 +78,10 @@ impl Encodable for CommandString {
     fn consensus_encode<S: io::Write>(
         &self,
         s: S,
-    ) -> Result<usize, encode::Error> {
+    ) -> Result<usize, io::Error> {
         let mut rawbytes = [0u8; 12];
         let strbytes = self.0.as_bytes();
-        if strbytes.len() > 12 {
-            return Err(encode::Error::UnrecognizedNetworkCommand(self.0.clone().into_owned()));
-        }
+        debug_assert!(strbytes.len() <= 12);
         rawbytes[..strbytes.len()].clone_from_slice(&strbytes[..]);
         rawbytes.consensus_encode(s)
     }
@@ -90,7 +100,7 @@ impl Decodable for CommandString {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 /// A Network message
 pub struct RawNetworkMessage {
     /// Magic bytes to identify the network these messages are meant for
@@ -99,9 +109,9 @@ pub struct RawNetworkMessage {
     pub payload: NetworkMessage
 }
 
-#[derive(Clone, PartialEq, Eq, Debug)]
 /// A Network message payload. Proper documentation is available on at
 /// [Bitcoin Wiki: Protocol Specification](https://en.bitcoin.it/wiki/Protocol_specification)
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum NetworkMessage {
     /// `version`
     Version(message_network::VersionMessage),
@@ -154,11 +164,31 @@ pub enum NetworkMessage {
     /// `alert`
     Alert(Vec<u8>),
     /// `reject`
-    Reject(message_network::Reject)
+    Reject(message_network::Reject),
+    /// `feefilter`
+    FeeFilter(i64),
+    /// `wtxidrelay`
+    WtxidRelay,
+    /// `addrv2`
+    AddrV2(Vec<AddrV2Message>),
+    /// `sendaddrv2`
+    SendAddrV2,
+
+    /// Any other message.
+    Unknown {
+        /// The command of this message.
+        command: CommandString,
+        /// The payload of this message.
+        payload: Vec<u8>,
+    }
 }
 
 impl NetworkMessage {
-    /// Return the message command. This is useful for debug outputs.
+    /// Return the message command as a static string reference.
+    ///
+    /// This returns `"unknown"` for [NetworkMessage::Unknown],
+    /// regardless of the actual command in the unknown message.
+    /// Use the [command] method to get the command for unknown messages.
     pub fn cmd(&self) -> &'static str {
         match *self {
             NetworkMessage::Version(_) => "version",
@@ -185,17 +215,29 @@ impl NetworkMessage {
             NetworkMessage::CFCheckpt(_) => "cfcheckpt",
             NetworkMessage::Alert(_)    => "alert",
             NetworkMessage::Reject(_)    => "reject",
+            NetworkMessage::FeeFilter(_) => "feefilter",
+            NetworkMessage::WtxidRelay => "wtxidrelay",
+            NetworkMessage::AddrV2(_) => "addrv2",
+            NetworkMessage::SendAddrV2 => "sendaddrv2",
+            NetworkMessage::Unknown { .. } => "unknown",
         }
     }
 
     /// Return the CommandString for the message command.
     pub fn command(&self) -> CommandString {
-        self.cmd().into()
+        match *self {
+            NetworkMessage::Unknown { command: ref c, .. } => c.clone(),
+            _ => CommandString::try_from(self.cmd()).expect("cmd returns valid commands")
+        }
     }
 }
 
 impl RawNetworkMessage {
-    /// Return the message command. This is useful for debug outputs.
+    /// Return the message command as a static string reference.
+    ///
+    /// This returns `"unknown"` for [NetworkMessage::Unknown],
+    /// regardless of the actual command in the unknown message.
+    /// Use the [command] method to get the command for unknown messages.
     pub fn cmd(&self) -> &'static str {
         self.payload.cmd()
     }
@@ -213,7 +255,7 @@ impl<'a> Encodable for HeaderSerializationWrapper<'a> {
     fn consensus_encode<S: io::Write>(
         &self,
         mut s: S,
-    ) -> Result<usize, encode::Error> {
+    ) -> Result<usize, io::Error> {
         let mut len = 0;
         len += VarInt(self.0.len() as u64).consensus_encode(&mut s)?;
         for header in self.0.iter() {
@@ -228,7 +270,7 @@ impl Encodable for RawNetworkMessage {
     fn consensus_encode<S: io::Write>(
         &self,
         mut s: S,
-    ) -> Result<usize, encode::Error> {
+    ) -> Result<usize, io::Error> {
         let mut len = 0;
         len += self.magic.consensus_encode(&mut s)?;
         len += self.command().consensus_encode(&mut s)?;
@@ -253,10 +295,15 @@ impl Encodable for RawNetworkMessage {
             NetworkMessage::CFCheckpt(ref dat) => serialize(dat),
             NetworkMessage::Alert(ref dat)    => serialize(dat),
             NetworkMessage::Reject(ref dat) => serialize(dat),
+            NetworkMessage::FeeFilter(ref data) => serialize(data),
+            NetworkMessage::AddrV2(ref dat) => serialize(dat),
             NetworkMessage::Verack
             | NetworkMessage::SendHeaders
             | NetworkMessage::MemPool
-            | NetworkMessage::GetAddr => vec![],
+            | NetworkMessage::GetAddr
+            | NetworkMessage::WtxidRelay
+            | NetworkMessage::SendAddrV2 => vec![],
+            NetworkMessage::Unknown { payload: ref data, .. } => serialize(data),
         }).consensus_encode(&mut s)?;
         Ok(len)
     }
@@ -288,11 +335,11 @@ impl Decodable for HeaderDeserializationWrapper {
 impl Decodable for RawNetworkMessage {
     fn consensus_decode<D: io::Read>(mut d: D) -> Result<Self, encode::Error> {
         let magic = Decodable::consensus_decode(&mut d)?;
-        let cmd = CommandString::consensus_decode(&mut d)?.0;
+        let cmd = CommandString::consensus_decode(&mut d)?;
         let raw_payload = CheckedData::consensus_decode(&mut d)?.0;
 
         let mut mem_d = Cursor::new(raw_payload);
-        let payload = match &cmd[..] {
+        let payload = match &cmd.0[..] {
             "version" => NetworkMessage::Version(Decodable::consensus_decode(&mut mem_d)?),
             "verack"  => NetworkMessage::Verack,
             "addr"    => NetworkMessage::Addr(Decodable::consensus_decode(&mut mem_d)?),
@@ -319,7 +366,14 @@ impl Decodable for RawNetworkMessage {
             "cfcheckpt" => NetworkMessage::CFCheckpt(Decodable::consensus_decode(&mut mem_d)?),
             "reject" => NetworkMessage::Reject(Decodable::consensus_decode(&mut mem_d)?),
             "alert"   => NetworkMessage::Alert(Decodable::consensus_decode(&mut mem_d)?),
-            _ => return Err(encode::Error::UnrecognizedNetworkCommand(cmd.into_owned())),
+            "feefilter" => NetworkMessage::FeeFilter(Decodable::consensus_decode(&mut mem_d)?),
+            "wtxidrelay" => NetworkMessage::WtxidRelay,
+            "addrv2" => NetworkMessage::AddrV2(Decodable::consensus_decode(&mut mem_d)?),
+            "sendaddrv2" => NetworkMessage::SendAddrV2,
+            _ => NetworkMessage::Unknown {
+                command: cmd,
+                payload: mem_d.into_inner(),
+            }
         };
         Ok(RawNetworkMessage {
             magic: magic,
@@ -330,14 +384,14 @@ impl Decodable for RawNetworkMessage {
 
 #[cfg(test)]
 mod test {
-    use std::io;
+    use std::net::Ipv4Addr;
     use super::{RawNetworkMessage, NetworkMessage, CommandString};
     use network::constants::ServiceFlags;
-    use consensus::encode::{Encodable, deserialize, deserialize_partial, serialize};
+    use consensus::encode::{deserialize, deserialize_partial, serialize};
     use hashes::hex::FromHex;
     use hashes::sha256d::Hash;
     use hashes::Hash as HashTrait;
-    use network::address::Address;
+    use network::address::{Address, AddrV2, AddrV2Message};
     use super::message_network::{Reject, RejectReason, VersionMessage};
     use network::message_blockdata::{Inventory, GetBlocksMessage, GetHeadersMessage};
     use blockdata::block::{Block, BlockHeader};
@@ -376,11 +430,15 @@ mod test {
             NetworkMessage::GetCFilters(GetCFilters{filter_type: 2, start_height: 52, stop_hash: hash([42u8; 32]).into()}),
             NetworkMessage::CFilter(CFilter{filter_type: 7, block_hash: hash([25u8; 32]).into(), filter: vec![1,2,3]}),
             NetworkMessage::GetCFHeaders(GetCFHeaders{filter_type: 4, start_height: 102, stop_hash: hash([47u8; 32]).into()}),
-            NetworkMessage::CFHeaders(CFHeaders{filter_type: 13, stop_hash: hash([53u8; 32]).into(), previous_filter: hash([12u8; 32]).into(), filter_hashes: vec![hash([4u8; 32]).into(), hash([12u8; 32]).into()]}),
+            NetworkMessage::CFHeaders(CFHeaders{filter_type: 13, stop_hash: hash([53u8; 32]).into(), previous_filter_header: hash([12u8; 32]).into(), filter_hashes: vec![hash([4u8; 32]).into(), hash([12u8; 32]).into()]}),
             NetworkMessage::GetCFCheckpt(GetCFCheckpt{filter_type: 17, stop_hash: hash([25u8; 32]).into()}),
             NetworkMessage::CFCheckpt(CFCheckpt{filter_type: 27, stop_hash: hash([77u8; 32]).into(), filter_headers: vec![hash([3u8; 32]).into(), hash([99u8; 32]).into()]}),
             NetworkMessage::Alert(vec![45,66,3,2,6,8,9,12,3,130]),
-            NetworkMessage::Reject(Reject{message: "Test reject".into(), ccode: RejectReason::Duplicate, reason: "Cause".into(), hash: hash([255u8; 32])}),
+            NetworkMessage::Reject(Reject{message: CommandString::try_from("Test reject").unwrap(), ccode: RejectReason::Duplicate, reason: "Cause".into(), hash: hash([255u8; 32])}),
+            NetworkMessage::FeeFilter(1000),
+            NetworkMessage::WtxidRelay,
+            NetworkMessage::AddrV2(vec![AddrV2Message{ addr: AddrV2::Ipv4(Ipv4Addr::new(127, 0, 0, 1)), port: 0, services: ServiceFlags::NONE, time: 0 }]),
+            NetworkMessage::SendAddrV2,
         ];
 
         for msg in msgs {
@@ -391,21 +449,20 @@ mod test {
     }
 
     #[test]
-    fn serialize_commandstring_test() {
+    fn commandstring_test() {
+        // Test converting.
+        assert_eq!(CommandString::try_from("AndrewAndrew").unwrap().as_ref(), "AndrewAndrew");
+        assert!(CommandString::try_from("AndrewAndrewA").is_err());
+
+        // Test serializing.
         let cs = CommandString("Andrew".into());
         assert_eq!(serialize(&cs), vec![0x41u8, 0x6e, 0x64, 0x72, 0x65, 0x77, 0, 0, 0, 0, 0, 0]);
 
-        // Test oversized one.
-        let mut encoder = io::Cursor::new(vec![]);
-        assert!(CommandString("AndrewAndrewA".into()).consensus_encode(&mut encoder).is_err());
-    }
-
-    #[test]
-    fn deserialize_commandstring_test() {
+        // Test deserializing
         let cs: Result<CommandString, _> = deserialize(&[0x41u8, 0x6e, 0x64, 0x72, 0x65, 0x77, 0, 0, 0, 0, 0, 0]);
         assert!(cs.is_ok());
         assert_eq!(cs.as_ref().unwrap().to_string(), "Andrew".to_owned());
-        assert_eq!(cs.unwrap(), "Andrew".into());
+        assert_eq!(cs.unwrap(), CommandString::try_from("Andrew").unwrap());
 
         let short_cs: Result<CommandString, _> = deserialize(&[0x41u8, 0x6e, 0x64, 0x72, 0x65, 0x77, 0, 0, 0, 0, 0]);
         assert!(short_cs.is_err());

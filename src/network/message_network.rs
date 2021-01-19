@@ -84,8 +84,8 @@ impl_consensus_encoding!(VersionMessage, version, services, timestamp,
                          receiver, sender, nonce,
                          user_agent, start_height, relay);
 
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 /// message rejection reason as a code
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum RejectReason {
     /// malformed message
     Malformed = 0x01,
@@ -106,7 +106,7 @@ pub enum RejectReason {
 }
 
 impl Encodable for RejectReason {
-    fn consensus_encode<W: io::Write>(&self, mut e: W) -> Result<usize, encode::Error> {
+    fn consensus_encode<W: io::Write>(&self, mut e: W) -> Result<usize, io::Error> {
         e.write_all(&[*self as u8])?;
         Ok(1)
     }

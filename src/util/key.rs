@@ -22,6 +22,8 @@ use std::str::FromStr;
 
 use secp256k1::{self, Secp256k1};
 use network::constants::Network;
+use hashes::{Hash, hash160};
+use hash_types::{PubkeyHash, WPubkeyHash};
 use util::base58;
 
 /// A key-related error.
@@ -44,15 +46,11 @@ impl fmt::Display for Error {
 }
 
 impl error::Error for Error {
-    fn cause(&self) -> Option<&error::Error> {
+    fn cause(&self) -> Option<&dyn error::Error> {
         match *self {
             Error::Base58(ref e) => Some(e),
             Error::Secp256k1(ref e) => Some(e),
         }
-    }
-
-    fn description(&self) -> &str {
-        "description() is deprecated; use Display"
     }
 }
 
@@ -80,20 +78,59 @@ pub struct PublicKey {
 }
 
 impl PublicKey {
+    /// Returns bitcoin 160-bit hash of the public key
+    pub fn pubkey_hash(&self) -> PubkeyHash {
+        if self.compressed {
+            PubkeyHash::hash(&self.key.serialize())
+        } else {
+            PubkeyHash::hash(&self.key.serialize_uncompressed())
+        }
+    }
+
+    /// Returns bitcoin 160-bit hash of the public key for witness program
+    pub fn wpubkey_hash(&self) -> Option<WPubkeyHash> {
+        if self.compressed {
+            Some(WPubkeyHash::from_inner(
+                hash160::Hash::hash(&self.key.serialize()).into_inner()
+            ))
+        } else {
+            // We can't create witness pubkey hashes for an uncompressed
+            // public keys
+            None
+        }
+    }
+
     /// Write the public key into a writer
-    pub fn write_into<W: io::Write>(&self, mut writer: W) {
-        let write_res: io::Result<()> = if self.compressed {
+    pub fn write_into<W: io::Write>(&self, mut writer: W) -> Result<(), io::Error> {
+        if self.compressed {
             writer.write_all(&self.key.serialize())
         } else {
             writer.write_all(&self.key.serialize_uncompressed())
+        }
+    }
+
+    /// Read the public key from a reader
+    ///
+    /// This internally reads the first byte before reading the rest, so
+    /// use of a `BufReader` is recommended.
+    pub fn read_from<R: io::Read>(mut reader: R) -> Result<Self, io::Error> {
+        let mut bytes = [0; 65];
+
+        reader.read_exact(&mut bytes[0..1])?;
+        let bytes = if bytes[0] < 4 {
+            &mut bytes[..33]
+        } else {
+            &mut bytes[..65]
         };
-        debug_assert!(write_res.is_ok());
+
+        reader.read_exact(&mut bytes[1..])?;
+        Self::from_slice(bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
     /// Serialize the public key to bytes
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::new();
-        self.write_into(&mut buf);
+        self.write_into(&mut buf).expect("vecs don't error");
         buf
     }
 
@@ -169,11 +206,11 @@ impl PrivateKey {
     }
 
     /// Format the private key to WIF format.
-    pub fn fmt_wif(&self, fmt: &mut fmt::Write) -> fmt::Result {
+    pub fn fmt_wif(&self, fmt: &mut dyn fmt::Write) -> fmt::Result {
         let mut ret = [0; 34];
         ret[0] = match self.network {
             Network::Bitcoin => 128,
-            Network::Testnet | Network::Regtest => 239,
+            Network::Testnet | Network::Signet | Network::Regtest => 239,
         };
         ret[1..33].copy_from_slice(&self.key[..]);
         let privkey = if self.compressed {
@@ -359,7 +396,9 @@ impl<'de> ::serde::Deserialize<'de> for PublicKey {
 mod tests {
     use super::{PrivateKey, PublicKey};
     use secp256k1::Secp256k1;
+    use std::io;
     use std::str::FromStr;
+    use hashes::hex::ToHex;
     use network::constants::Network::Testnet;
     use network::constants::Network::Bitcoin;
     use util::address::Address;
@@ -398,6 +437,22 @@ mod tests {
         pk.compressed = true;
         assert_eq!(&pk.to_string(), "032e58afe51f9ed8ad3cc7897f634d881fdbe49a81564629ded8156bebd2ffd1af");
         assert_eq!(pk, PublicKey::from_str("032e58afe51f9ed8ad3cc7897f634d881fdbe49a81564629ded8156bebd2ffd1af").unwrap());
+    }
+
+    #[test]
+    fn test_pubkey_hash() {
+        let pk = PublicKey::from_str("032e58afe51f9ed8ad3cc7897f634d881fdbe49a81564629ded8156bebd2ffd1af").unwrap();
+        let upk = PublicKey::from_str("042e58afe51f9ed8ad3cc7897f634d881fdbe49a81564629ded8156bebd2ffd1af191923a2964c177f5b5923ae500fca49e99492d534aa3759d6b25a8bc971b133").unwrap();
+        assert_eq!(pk.pubkey_hash().to_hex(), "9511aa27ef39bbfa4e4f3dd15f4d66ea57f475b4");
+        assert_eq!(upk.pubkey_hash().to_hex(), "ac2e7daf42d2c97418fd9f78af2de552bb9c6a7a");
+    }
+
+    #[test]
+    fn test_wpubkey_hash() {
+        let pk = PublicKey::from_str("032e58afe51f9ed8ad3cc7897f634d881fdbe49a81564629ded8156bebd2ffd1af").unwrap();
+        let upk = PublicKey::from_str("042e58afe51f9ed8ad3cc7897f634d881fdbe49a81564629ded8156bebd2ffd1af191923a2964c177f5b5923ae500fca49e99492d534aa3759d6b25a8bc971b133").unwrap();
+        assert_eq!(pk.wpubkey_hash().unwrap().to_hex(), "9511aa27ef39bbfa4e4f3dd15f4d66ea57f475b4");
+        assert_eq!(upk.wpubkey_hash(), None);
     }
 
     #[cfg(feature = "serde")]
@@ -444,5 +499,54 @@ mod tests {
         assert_tokens(&pk.readable(), &[Token::BorrowedStr(PK_STR)]);
         assert_tokens(&pk_u.compact(), &[Token::BorrowedBytes(&PK_BYTES_U[..])]);
         assert_tokens(&pk_u.readable(), &[Token::BorrowedStr(PK_STR_U)]);
+    }
+
+    fn random_key(mut seed: u8) -> PublicKey {
+        loop {
+            let mut data = [0; 65];
+            for byte in &mut data[..] {
+                *byte = seed;
+                // totally a rng
+                seed = seed.wrapping_mul(41).wrapping_add(43);
+            }
+            if data[0] % 2 == 0 {
+                data[0] = 4;
+                if let Ok(key) = PublicKey::from_slice(&data[..]) {
+                    return key;
+                }
+            } else {
+                data[0] = 2 + (data[0] >> 7);
+                if let Ok(key) = PublicKey::from_slice(&data[..33]) {
+                    return key;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pubkey_read_write() {
+        const N_KEYS: usize = 20;
+        let keys: Vec<_> = (0..N_KEYS).map(|i| random_key(i as u8)).collect();
+
+        let mut v = vec![];
+        for k in &keys {
+            k.write_into(&mut v).expect("writing into vec");
+        }
+
+        let mut dec_keys = vec![];
+        let mut cursor = io::Cursor::new(&v);
+        for _ in 0..N_KEYS {
+            dec_keys.push(PublicKey::read_from(&mut cursor).expect("reading from vec"));
+        }
+
+        assert_eq!(keys, dec_keys);
+
+        // sanity checks
+        assert!(PublicKey::read_from(&mut cursor).is_err());
+        assert!(PublicKey::read_from(io::Cursor::new(&[])).is_err());
+        assert!(PublicKey::read_from(io::Cursor::new(&[0; 33][..])).is_err());
+        assert!(PublicKey::read_from(io::Cursor::new(&[2; 32][..])).is_err());
+        assert!(PublicKey::read_from(io::Cursor::new(&[0; 65][..])).is_err());
+        assert!(PublicKey::read_from(io::Cursor::new(&[4; 64][..])).is_err());
     }
 }

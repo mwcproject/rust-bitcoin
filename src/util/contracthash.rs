@@ -18,6 +18,8 @@
 //! at http://blockstream.com/sidechains.pdf for details of
 //! what this does.
 
+#![cfg_attr(not(test), deprecated)]
+
 use secp256k1::{self, Secp256k1};
 use PrivateKey;
 use PublicKey;
@@ -69,18 +71,13 @@ impl fmt::Display for Error {
     }
 }
 
-#[allow(deprecated)]
 impl error::Error for Error {
-    fn cause(&self) -> Option<&error::Error> {
+    fn cause(&self) -> Option<&dyn error::Error> {
         match *self {
             Error::Secp(ref e) => Some(e),
             Error::Script(ref e) => Some(e),
             _ => None
         }
-    }
-
-    fn description(&self) -> &str {
-        "description() is deprecated; use Display"
     }
 }
 
@@ -220,8 +217,11 @@ pub fn untemplate(script: &script::Script) -> Result<(Template, Vec<PublicKey>),
     }
 
     let mut mode = Mode::SeekingKeys;
-    for instruction in script.iter(false) {
-        match instruction {
+    for instruction in script.instructions() {
+        if let Err(e) = instruction {
+            return Err(Error::Script(e));
+        }
+        match instruction.unwrap() {
             script::Instruction::PushBytes(data) => {
                 let n = data.len();
                 ret = match PublicKey::from_slice(data) {
@@ -268,7 +268,6 @@ pub fn untemplate(script: &script::Script) -> Result<(Template, Vec<PublicKey>),
                 }
                 ret = ret.push_opcode(op);
             }
-            script::Instruction::Error(e) => { return Err(Error::Script(e)); }
         }
     }
     Ok((Template::from(&ret[..]), retkeys))

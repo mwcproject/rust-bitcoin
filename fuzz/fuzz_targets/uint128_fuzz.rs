@@ -1,5 +1,6 @@
 extern crate bitcoin;
 use std::str::FromStr;
+use std::convert::Into;
 
 fn do_test(data: &[u8]) {
     macro_rules! read_ints {
@@ -11,6 +12,12 @@ fn do_test(data: &[u8]) {
             }
             // Note BE:
             let uint128 = bitcoin::util::uint::Uint128::from(&[native as u64, (native >> 8*8) as u64][..]);
+
+            // Checking two conversion methods against each other
+            let mut slice = [0u8; 16];
+            slice.copy_from_slice(&data[$start..$start + 16]);
+            assert_eq!(uint128, bitcoin::util::uint::Uint128::from_be_bytes(slice));
+
             (native, uint128)
         } }
     }
@@ -40,6 +47,7 @@ fn do_test(data: &[u8]) {
     check_eq!(a_native.wrapping_sub(b_native), a - b);
     if b_native != 0 {
         check_eq!(a_native.wrapping_div(b_native), a / b);
+        check_eq!(a_native.wrapping_rem(b_native), a % b);
     }
     check_eq!(a_native.wrapping_mul(b_native), a * b);
     check_eq!(a_native & b_native, a & b);
@@ -80,9 +88,9 @@ mod tests {
         for (idx, c) in hex.as_bytes().iter().enumerate() {
             b <<= 4;
             match *c {
-                b'A'...b'F' => b |= c - b'A' + 10,
-                b'a'...b'f' => b |= c - b'a' + 10,
-                b'0'...b'9' => b |= c - b'0',
+                b'A'..=b'F' => b |= c - b'A' + 10,
+                b'a'..=b'f' => b |= c - b'a' + 10,
+                b'0'..=b'9' => b |= c - b'0',
                 _ => panic!("Bad hex"),
             }
             if (idx & 1) == 1 {

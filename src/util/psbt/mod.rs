@@ -39,6 +39,7 @@ pub use self::map::{Map, Global, Input, Output};
 
 /// A Partially Signed Transaction.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct PartiallySignedTransaction {
     /// The key-value pairs for all global data.
     pub global: Global,
@@ -94,7 +95,7 @@ impl Encodable for PartiallySignedTransaction {
     fn consensus_encode<S: io::Write>(
         &self,
         mut s: S,
-    ) -> Result<usize, encode::Error> {
+    ) -> Result<usize, io::Error> {
         let mut len = 0;
         len += b"psbt".consensus_encode(&mut s)?;
 
@@ -163,6 +164,7 @@ impl Decodable for PartiallySignedTransaction {
 #[cfg(test)]
 mod tests {
     use hashes::hex::FromHex;
+    use hashes::{sha256, hash160, Hash, ripemd160};
     use hash_types::Txid;
 
     use std::collections::BTreeMap;
@@ -173,9 +175,9 @@ mod tests {
     use blockdata::transaction::{Transaction, TxIn, TxOut, OutPoint};
     use network::constants::Network::Bitcoin;
     use consensus::encode::{deserialize, serialize, serialize_hex};
-    use util::bip32::{ChildNumber, DerivationPath, ExtendedPrivKey, ExtendedPubKey, Fingerprint};
+    use util::bip32::{ChildNumber, ExtendedPrivKey, ExtendedPubKey, Fingerprint, KeySource};
     use util::key::PublicKey;
-    use util::psbt::map::{Global, Output};
+    use util::psbt::map::{Global, Output, Input};
     use util::psbt::raw;
 
     use super::PartiallySignedTransaction;
@@ -190,6 +192,9 @@ mod tests {
                     input: vec![],
                     output: vec![],
                 },
+                xpub: Default::default(),
+                version: 0,
+                proprietary: BTreeMap::new(),
                 unknown: BTreeMap::new(),
             },
             inputs: vec![],
@@ -206,7 +211,7 @@ mod tests {
         let secp = &Secp256k1::new();
         let seed = Vec::from_hex("000102030405060708090a0b0c0d0e0f").unwrap();
 
-        let mut hd_keypaths: BTreeMap<PublicKey, (Fingerprint, DerivationPath)> = Default::default();
+        let mut hd_keypaths: BTreeMap<PublicKey, KeySource> = Default::default();
 
         let mut sk: ExtendedPrivKey = ExtendedPrivKey::new_master(Bitcoin, &seed).unwrap();
 
@@ -236,7 +241,7 @@ mod tests {
             witness_script: Some(hex_script!(
                 "a9143545e6e33b832c47050f24d3eeb93c9c03948bc787"
             )),
-            hd_keypaths: hd_keypaths,
+            bip32_derivation: hd_keypaths,
             ..Default::default()
         };
 
@@ -277,6 +282,9 @@ mod tests {
                     },
                 ],
             },
+            xpub: Default::default(),
+            version: 0,
+            proprietary: Default::default(),
             unknown: Default::default(),
         };
 
@@ -305,6 +313,106 @@ mod tests {
         let hex = "70736274ff0100890200000001207ae985d787dfe6143d5c58fad79cc7105e0e799fcf033b7f2ba17e62d7b3200000000000ffffffff02563d03000000000022002019899534b9a011043c0dd57c3ff9a381c3522c5f27c6a42319085b56ca543a1d6adc020000000000220020618b47a07ebecca4e156edb1b9ea7c24bdee0139fc049237965ffdaf56d5ee73000000000001012b801a0600000000002200201148e93e9315e37dbed2121be5239257af35adc03ffdfc5d914b083afa44dab82202025fe7371376d53cf8a2783917c28bf30bd690b0a4d4a207690093ca2b920ee076473044022007e06b362e89912abd4661f47945430739b006a85d1b2a16c01dc1a4bd07acab022061576d7aa834988b7ab94ef21d8eebd996ea59ea20529a19b15f0c9cebe3d8ac01220202b3fe93530020a8294f0e527e33fbdff184f047eb6b5a1558a352f62c29972f8a473044022002787f926d6817504431ee281183b8119b6845bfaa6befae45e13b6d430c9d2f02202859f149a6cd26ae2f03a107e7f33c7d91730dade305fe077bae677b5d44952a01010547522102b3fe93530020a8294f0e527e33fbdff184f047eb6b5a1558a352f62c29972f8a21025fe7371376d53cf8a2783917c28bf30bd690b0a4d4a207690093ca2b920ee07652ae0001014752210283ef76537f2d58ae3aa3a4bd8ae41c3f230ccadffb1a0bd3ca504d871cff05e7210353d79cc0cb1396f4ce278d005f16d948e02a6aec9ed1109f13747ecb1507b37b52ae00010147522102b3937241777b6665e0d694e52f9c1b188433641df852da6fc42187b5d8a368a321034cdd474f01cc5aa7ff834ad8bcc882a87e854affc775486bc2a9f62e8f49bd7852ae00";
         let psbt: PartiallySignedTransaction = hex_psbt!(hex).unwrap();
         assert_eq!(hex, serialize_hex(&psbt));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_serde_psbt() {
+        //! Create a full PSBT value with various fields filled and make sure it can be JSONized.
+        use hashes::sha256d;
+        use util::psbt::map::Input;
+
+        // create some values to use in the PSBT
+        let tx = Transaction {
+            version: 1,
+            lock_time: 0,
+            input: vec![TxIn {
+                previous_output: OutPoint {
+                    txid: Txid::from_hex("e567952fb6cc33857f392efa3a46c995a28f69cca4bb1b37e0204dab1ec7a389").unwrap(),
+                    vout: 1,
+                },
+                script_sig: hex_script!("160014be18d152a9b012039daf3da7de4f53349eecb985"),
+                sequence: 4294967295,
+                witness: vec![Vec::from_hex("03d2e15674941bad4a996372cb87e1856d3652606d98562fe39c5e9e7e413f2105").unwrap()],
+            }],
+            output: vec![
+                TxOut {
+                    value: 190303501938,
+                    script_pubkey: hex_script!("a914339725ba21efd62ac753a9bcd067d6c7a6a39d0587"),
+                },
+            ],
+        };
+        let unknown: BTreeMap<raw::Key, Vec<u8>> = vec![(
+            raw::Key { type_value: 1, key: vec![0, 1] },
+            vec![3, 4 ,5],
+        )].into_iter().collect();
+        let key_source = ("deadbeef".parse().unwrap(), "m/0'/1".parse().unwrap());
+        let keypaths: BTreeMap<PublicKey, KeySource> = vec![(
+            "0339880dc92394b7355e3d0439fa283c31de7590812ea011c4245c0674a685e883".parse().unwrap(),
+            key_source.clone(),
+        )].into_iter().collect();
+
+        let proprietary: BTreeMap<raw::ProprietaryKey, Vec<u8>> = vec![(
+            raw::ProprietaryKey {
+                prefix: "prefx".as_bytes().to_vec(),
+                subtype: 42,
+                key: "test_key".as_bytes().to_vec(),
+            },
+            vec![5, 6, 7],
+        )].into_iter().collect();
+
+        let psbt = PartiallySignedTransaction {
+            global: Global {
+                version: 0,
+                xpub: {
+                    let xpub: ExtendedPubKey =
+                        "xpub661MyMwAqRbcGoRVtwfvzZsq2VBJR1LAHfQstHUoxqDorV89vRoMxUZ27kLrraAj6MPi\
+                        QfrDb27gigC1VS1dBXi5jGpxmMeBXEkKkcXUTg4".parse().unwrap();
+                    vec![(xpub, key_source.clone())].into_iter().collect()
+                },
+                unsigned_tx: {
+                    let mut unsigned = tx.clone();
+                    unsigned.input[0].script_sig = Script::new();
+                    unsigned.input[0].witness = Vec::new();
+                    unsigned
+                },
+                proprietary: proprietary.clone(),
+                unknown: unknown.clone(),
+            },
+            inputs: vec![Input {
+                non_witness_utxo: Some(tx),
+                witness_utxo: Some(TxOut {
+                    value: 190303501938,
+                    script_pubkey: hex_script!("a914339725ba21efd62ac753a9bcd067d6c7a6a39d0587"),
+                }),
+                sighash_type: Some("SIGHASH_SINGLE|SIGHASH_ANYONECANPAY".parse().unwrap()),
+                redeem_script: Some(vec![0x51].into()),
+                witness_script: None,
+                partial_sigs: vec![(
+                    "0339880dc92394b7355e3d0439fa283c31de7590812ea011c4245c0674a685e883".parse().unwrap(),
+                    vec![8, 5, 4],
+                )].into_iter().collect(),
+                bip32_derivation: keypaths.clone(),
+                final_script_witness: Some(vec![vec![1, 3], vec![5]]),
+                ripemd160_preimages: vec![(ripemd160::Hash::hash(&[]), vec![1, 2])].into_iter().collect(),
+                sha256_preimages: vec![(sha256::Hash::hash(&[]), vec![1, 2])].into_iter().collect(),
+                hash160_preimages: vec![(hash160::Hash::hash(&[]), vec![1, 2])].into_iter().collect(),
+                hash256_preimages: vec![(sha256d::Hash::hash(&[]), vec![1, 2])].into_iter().collect(),
+                proprietary: proprietary.clone(),
+                unknown: unknown.clone(),
+                ..Default::default()
+            }],
+            outputs: vec![Output {
+                bip32_derivation: keypaths.clone(),
+                proprietary: proprietary.clone(),
+                unknown: unknown.clone(),
+                ..Default::default()
+            }],
+        };
+        let encoded = ::serde_json::to_string(&psbt).unwrap();
+        println!("encoded PSBT: {}", encoded);
+        let decoded: PartiallySignedTransaction = ::serde_json::from_str(&encoded).unwrap();
+        assert_eq!(psbt, decoded);
     }
 
     mod bip_vectors {
@@ -379,6 +487,9 @@ mod tests {
                             },
                         ],
                     },
+                    xpub: Default::default(),
+                    version: 0,
+                    proprietary: BTreeMap::new(),
                     unknown: BTreeMap::new(),
                 },
                 inputs: vec![Input {
@@ -560,5 +671,120 @@ mod tests {
 
             assert_eq!(psbt.inputs[0].unknown, unknown)
         }
+    }
+
+    #[test]
+    fn serialize_and_deserialize_preimage_psbt(){
+        // create a sha preimage map
+        let mut sha256_preimages = BTreeMap::new();
+        sha256_preimages.insert(sha256::Hash::hash(&[1u8, 2u8]), vec![1u8, 2u8]);
+        sha256_preimages.insert(sha256::Hash::hash(&[1u8]), vec![1u8]);
+
+        // same for hash160
+        let mut hash160_preimages = BTreeMap::new();
+        hash160_preimages.insert(hash160::Hash::hash(&[1u8, 2u8]), vec![1u8, 2u8]);
+        hash160_preimages.insert(hash160::Hash::hash(&[1u8]), vec![1u8]);
+
+        // same vector as valid_vector_1 from BIPs with added
+        let mut unserialized = PartiallySignedTransaction {
+            global: Global {
+                unsigned_tx: Transaction {
+                    version: 2,
+                    lock_time: 1257139,
+                    input: vec![TxIn {
+                        previous_output: OutPoint {
+                            txid: Txid::from_hex(
+                                "f61b1742ca13176464adb3cb66050c00787bb3a4eead37e985f2df1e37718126",
+                            ).unwrap(),
+                            vout: 0,
+                        },
+                        script_sig: Script::new(),
+                        sequence: 4294967294,
+                        witness: vec![],
+                    }],
+                    output: vec![
+                        TxOut {
+                            value: 99999699,
+                            script_pubkey: hex_script!("76a914d0c59903c5bac2868760e90fd521a4665aa7652088ac"),
+                        },
+                        TxOut {
+                            value: 100000000,
+                            script_pubkey: hex_script!("a9143545e6e33b832c47050f24d3eeb93c9c03948bc787"),
+                        },
+                    ],
+                },
+                version: 0,
+                xpub: Default::default(),
+                proprietary: Default::default(),
+                unknown: BTreeMap::new(),
+            },
+            inputs: vec![Input {
+                non_witness_utxo: Some(Transaction {
+                    version: 1,
+                    lock_time: 0,
+                    input: vec![TxIn {
+                        previous_output: OutPoint {
+                            txid: Txid::from_hex(
+                                "e567952fb6cc33857f392efa3a46c995a28f69cca4bb1b37e0204dab1ec7a389",
+                            ).unwrap(),
+                            vout: 1,
+                        },
+                        script_sig: hex_script!("160014be18d152a9b012039daf3da7de4f53349eecb985"),
+                        sequence: 4294967295,
+                        witness: vec![
+                            Vec::from_hex("304402202712be22e0270f394f568311dc7ca9a68970b8025fdd3b240229f07f8a5f3a240220018b38d7dcd314e734c9276bd6fb40f673325bc4baa144c800d2f2f02db2765c01").unwrap(),
+                            Vec::from_hex("03d2e15674941bad4a996372cb87e1856d3652606d98562fe39c5e9e7e413f2105").unwrap(),
+                        ],
+                    },
+                    TxIn {
+                        previous_output: OutPoint {
+                            txid: Txid::from_hex(
+                                "b490486aec3ae671012dddb2bb08466bef37720a533a894814ff1da743aaf886",
+                            ).unwrap(),
+                            vout: 1,
+                        },
+                        script_sig: hex_script!("160014fe3e9ef1a745e974d902c4355943abcb34bd5353"),
+                        sequence: 4294967295,
+                        witness: vec![
+                            Vec::from_hex("3045022100d12b852d85dcd961d2f5f4ab660654df6eedcc794c0c33ce5cc309ffb5fce58d022067338a8e0e1725c197fb1a88af59f51e44e4255b20167c8684031c05d1f2592a01").unwrap(),
+                            Vec::from_hex("0223b72beef0965d10be0778efecd61fcac6f79a4ea169393380734464f84f2ab3").unwrap(),
+                        ],
+                    }],
+                    output: vec![
+                        TxOut {
+                            value: 200000000,
+                            script_pubkey: hex_script!("76a91485cff1097fd9e008bb34af709c62197b38978a4888ac"),
+                        },
+                        TxOut {
+                            value: 190303501938,
+                            script_pubkey: hex_script!("a914339725ba21efd62ac753a9bcd067d6c7a6a39d0587"),
+                        },
+                    ],
+                }),
+                ..Default::default()
+            },],
+            outputs: vec![
+                Output {
+                    ..Default::default()
+                },
+                Output {
+                    ..Default::default()
+                },
+            ],
+        };
+        unserialized.inputs[0].hash160_preimages = hash160_preimages;
+        unserialized.inputs[0].sha256_preimages = sha256_preimages;
+
+        let rtt : PartiallySignedTransaction = hex_psbt!(&serialize_hex(&unserialized)).unwrap();
+        assert_eq!(rtt, unserialized);
+
+        // Now add an ripemd160 with incorrect preimage
+        let mut ripemd160_preimages = BTreeMap::new();
+        ripemd160_preimages.insert(ripemd160::Hash::hash(&[17u8]), vec![18u8]);
+        unserialized.inputs[0].ripemd160_preimages = ripemd160_preimages;
+
+        // Now the roundtrip should fail as the preimage is incorrect.
+        let rtt : Result<PartiallySignedTransaction, _> = hex_psbt!(&serialize_hex(&unserialized));
+        assert!(rtt.is_err());
     }
 }

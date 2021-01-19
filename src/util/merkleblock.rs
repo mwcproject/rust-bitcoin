@@ -350,7 +350,7 @@ impl Encodable for PartialMerkleTree {
     fn consensus_encode<S: io::Write>(
         &self,
         mut s: S,
-    ) -> Result<usize, encode::Error> {
+    ) -> Result<usize, io::Error> {
         let ret = self.num_transactions.consensus_encode(&mut s)?
             + self.hashes.consensus_encode(&mut s)?;
         let mut bytes: Vec<u8> = vec![0; (self.bits.len() + 7) / 8];
@@ -439,15 +439,13 @@ impl MerkleBlock {
     ///
     /// The `header` is the block header, `block_txids` is the full list of txids included in the block and
     /// `match_txids` is a set containing the transaction ids that should be included in the partial merkle tree.
-    /// ```
-
     pub fn from_header_txids(
         header: &BlockHeader,
         block_txids: &[Txid],
         match_txids: &HashSet<Txid>,
     ) -> Self {
         let matches: Vec<bool> = block_txids
-            .into_iter()
+            .iter()
             .map(|txid| match_txids.contains(txid))
             .collect();
 
@@ -480,7 +478,7 @@ impl Encodable for MerkleBlock {
     fn consensus_encode<S: io::Write>(
         &self,
         mut s: S,
-    ) -> Result<usize, encode::Error> {
+    ) -> Result<usize, io::Error> {
         let len = self.header.consensus_encode(&mut s)?
             + self.txn.consensus_encode(s)?;
         Ok(len)

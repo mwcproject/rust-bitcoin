@@ -8,13 +8,14 @@ use bitcoin::consensus::encode;
 fn do_test(data: &[u8]) {
     let s: Result<script::Script, _> = encode::deserialize(data);
     if let Ok(script) = s {
-        let _: Vec<script::Instruction> = script.iter(false).collect();
-        let enforce_min: Vec<script::Instruction> = script.iter(true).collect();
+        let _: Result<Vec<script::Instruction>, script::Error> = script.instructions().collect();
 
         let mut b = script::Builder::new();
-        for ins in enforce_min {
-            match ins {
-                script::Instruction::Error(_) => return,
+        for ins in script.instructions_minimal() {
+            if ins.is_err() {
+                return;
+            }
+            match ins.ok().unwrap() {
                 script::Instruction::Op(op) => { b = b.push_opcode(op); }
                 script::Instruction::PushBytes(bytes) => {
                     // Any one-byte pushes, except -0, which can be interpreted as numbers, should be
@@ -69,9 +70,9 @@ mod tests {
         for (idx, c) in hex.as_bytes().iter().enumerate() {
             b <<= 4;
             match *c {
-                b'A'...b'F' => b |= c - b'A' + 10,
-                b'a'...b'f' => b |= c - b'a' + 10,
-                b'0'...b'9' => b |= c - b'0',
+                b'A'..=b'F' => b |= c - b'A' + 10,
+                b'a'..=b'f' => b |= c - b'a' + 10,
+                b'0'..=b'9' => b |= c - b'0',
                 _ => panic!("Bad hex"),
             }
             if (idx & 1) == 1 {

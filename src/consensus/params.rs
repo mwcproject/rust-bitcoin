@@ -20,26 +20,33 @@
 use network::constants::Network;
 use util::uint::Uint256;
 
-/// Lowest possible difficulty for Mainnet.
+/// Lowest possible difficulty for Mainnet. See comment on Params::pow_limit for more info.
 const MAX_BITS_BITCOIN: Uint256 = Uint256([
-    0xffffffffffffffffu64,
-    0xffffffffffffffffu64,
-    0xffffffffffffffffu64,
-    0x00000000ffffffffu64,
+    0x0000000000000000u64,
+    0x0000000000000000u64,
+    0x0000000000000000u64,
+    0x00000000ffff0000u64,
 ]);
-/// Lowest possible difficulty for Testnet.
+/// Lowest possible difficulty for Testnet. See comment on Params::pow_limit for more info.
 const MAX_BITS_TESTNET: Uint256 = Uint256([
-    0xffffffffffffffffu64,
-    0xffffffffffffffffu64,
-    0xffffffffffffffffu64,
-    0x00000000ffffffffu64,
+    0x0000000000000000u64,
+    0x0000000000000000u64,
+    0x0000000000000000u64,
+    0x00000000ffff0000u64,
 ]);
-/// Lowest possible difficulty for Regtest.
+/// Lowest possible difficulty for Signet. See comment on Params::pow_limit for more info.
+const MAX_BITS_SIGNET: Uint256 = Uint256([
+    0x0000000000000000u64,
+    0x0000000000000000u64,
+    0x0000000000000000u64,
+    0x00000377ae000000u64,
+]);
+/// Lowest possible difficulty for Regtest. See comment on Params::pow_limit for more info.
 const MAX_BITS_REGTEST: Uint256 = Uint256([
-    0xffffffffffffffffu64,
-    0xffffffffffffffffu64,
-    0xffffffffffffffffu64,
-    0x7fffffffffffffffu64,
+    0x0000000000000000u64,
+    0x0000000000000000u64,
+    0x0000000000000000u64,
+    0x7fffff0000000000u64,
 ]);
 
 #[derive(Debug, Clone)]
@@ -62,6 +69,13 @@ pub struct Params {
     /// Number of blocks with the same set of rules.
     pub miner_confirmation_window: u32,
     /// Proof of work limit value. It contains the lowest possible difficulty.
+    ///
+    /// Note that this value differs from Bitcoin Core's powLimit field in that this value is
+    /// attainable, but Bitcoin Core's is not. Specifically, because targets in Bitcoin are always
+    /// rounded to the nearest float expressible in "compact form", not all targets are attainable.
+    /// Still, this should not affect consensus as the only place where the non-compact form of
+    /// this is used in Bitcoin Core's consensus algorithm is in comparison and there are no
+    /// compact-expressible values between Bitcoin Core's and the limit expressed here.
     pub pow_limit: Uint256,
     /// Expected amount of time to mine one block.
     pub pow_target_spacing: u64,
@@ -103,6 +117,20 @@ impl Params {
                 pow_target_spacing: 10 * 60,            // 10 minutes.
                 pow_target_timespan: 14 * 24 * 60 * 60, // 2 weeks.
                 allow_min_difficulty_blocks: true,
+                no_pow_retargeting: false,
+            },
+            Network::Signet => Params {
+                network: Network::Signet,
+                bip16_time: 1333238400,                 // Apr 1 2012
+                bip34_height: 1,
+                bip65_height: 1,
+                bip66_height: 1,
+                rule_change_activation_threshold: 1916, // 95%
+                miner_confirmation_window: 2016,
+                pow_limit: MAX_BITS_SIGNET,
+                pow_target_spacing: 10 * 60,            // 10 minutes.
+                pow_target_timespan: 14 * 24 * 60 * 60, // 2 weeks.
+                allow_min_difficulty_blocks: false,
                 no_pow_retargeting: false,
             },
             Network::Regtest => Params {
