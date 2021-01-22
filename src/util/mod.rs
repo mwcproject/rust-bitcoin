@@ -27,8 +27,11 @@ pub mod hash;
 pub mod merkleblock;
 pub mod misc;
 pub mod psbt;
+pub mod taproot;
 pub mod uint;
 pub mod bip158;
+
+pub(crate) mod endian;
 
 use std::{error, fmt};
 
@@ -75,7 +78,8 @@ impl fmt::Display for Error {
         match *self {
             Error::Encode(ref e) => fmt::Display::fmt(e, f),
             Error::Network(ref e) => fmt::Display::fmt(e, f),
-            Error::BlockBadProofOfWork | Error::BlockBadTarget => f.write_str(error::Error::description(self)),
+            Error::BlockBadProofOfWork => f.write_str("block target correct but not attained"),
+            Error::BlockBadTarget => f.write_str("block target incorrect"),
         }
     }
 }
@@ -86,15 +90,6 @@ impl error::Error for Error {
             Error::Encode(ref e) => Some(e),
             Error::Network(ref e) => Some(e),
             Error::BlockBadProofOfWork | Error::BlockBadTarget => None
-        }
-    }
-
-    fn description(&self) -> &str {
-        match *self {
-            Error::Encode(ref e) => e.description(),
-            Error::Network(ref e) => e.description(),
-            Error::BlockBadProofOfWork => "block target correct but not attained",
-            Error::BlockBadTarget => "block target incorrect",
         }
     }
 }

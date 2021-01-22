@@ -18,15 +18,10 @@
 //! The functions here are designed to be fast.
 //!
 
-use std::fmt;
-
-use consensus::encode;
-use util::BitArray;
-
 macro_rules! construct_uint {
     ($name:ident, $n_words:expr) => (
         /// Little-endian large integer type
-        #[repr(C)]
+        #[derive(Copy, Clone, PartialEq, Eq, Hash, Default)]
         pub struct $name(pub [u64; $n_words]);
         impl_array_newtype!($name, u64, $n_words);
 
@@ -78,6 +73,7 @@ macro_rules! construct_uint {
             }
 
             /// Create an object from a given unsigned 64-bit integer
+            #[inline]
             pub fn from_u64(init: u64) -> Option<$name> {
                 let mut ret = [0; $n_words];
                 ret[0] = init;
@@ -85,9 +81,82 @@ macro_rules! construct_uint {
             }
 
             /// Create an object from a given signed 64-bit integer
+            #[inline]
             pub fn from_i64(init: i64) -> Option<$name> {
-                assert!(init >= 0);
-                $name::from_u64(init as u64)
+                if init >= 0 {
+                    $name::from_u64(init as u64)
+                } else {
+                    None
+                }
+            }
+
+            /// Creates big integer value from a byte slice array using
+            /// big-endian encoding
+            pub fn from_be_bytes(bytes: [u8; $n_words * 8]) -> $name {
+                use super::endian::slice_to_u64_be;
+                let mut slice = [0u64; $n_words];
+                slice.iter_mut()
+                    .rev()
+                    .zip(bytes.chunks(8))
+                    .for_each(|(word, bytes)| *word = slice_to_u64_be(bytes));
+                $name(slice)
+            }
+
+            // divmod like operation, returns (quotient, remainder)
+            #[inline]
+            fn div_rem(self, other: Self) -> (Self, Self) {
+                let mut sub_copy = self;
+                let mut shift_copy = other;
+                let mut ret = [0u64; $n_words];
+
+                let my_bits = self.bits();
+                let your_bits = other.bits();
+
+                // Check for division by 0
+                assert!(your_bits != 0);
+
+                // Early return in case we are dividing by a larger number than us
+                if my_bits < your_bits {
+                    return ($name(ret), sub_copy);
+                }
+
+                // Bitwise long division
+                let mut shift = my_bits - your_bits;
+                shift_copy = shift_copy << shift;
+                loop {
+                    if sub_copy >= shift_copy {
+                        ret[shift / 64] |= 1 << (shift % 64);
+                        sub_copy = sub_copy - shift_copy;
+                    }
+                    shift_copy = shift_copy >> 1;
+                    if shift == 0 {
+                        break;
+                    }
+                    shift -= 1;
+                }
+
+                ($name(ret), sub_copy)
+            }
+        }
+
+        impl PartialOrd for $name {
+            #[inline]
+            fn partial_cmp(&self, other: &$name) -> Option<::std::cmp::Ordering> {
+                Some(self.cmp(&other))
+            }
+        }
+
+        impl Ord for $name {
+            #[inline]
+            fn cmp(&self, other: &$name) -> ::std::cmp::Ordering {
+                // We need to manually implement ordering because we use little-endian
+                // and the auto derive is a lexicographic ordering(i.e. memcmp)
+                // which with numbers is equivilant to big-endian
+                for i in 0..$n_words {
+                    if self[$n_words - 1 - i] < other[$n_words - 1 - i] { return ::std::cmp::Ordering::Less; }
+                    if self[$n_words - 1 - i] > other[$n_words - 1 - i] { return ::std::cmp::Ordering::Greater; }
+                }
+                ::std::cmp::Ordering::Equal
             }
         }
 
@@ -116,7 +185,7 @@ macro_rules! construct_uint {
 
             #[inline]
             fn sub(self, other: $name) -> $name {
-                self + !other + BitArray::one()
+                self + !other + $crate::util::BitArray::one()
             }
         }
 
@@ -124,6 +193,7 @@ macro_rules! construct_uint {
             type Output = $name;
 
             fn mul(self, other: $name) -> $name {
+                use $crate::util::BitArray;
                 let mut me = $name::zero();
                 // TODO: be more efficient about this
                 for i in 0..(2 * $n_words) {
@@ -138,39 +208,19 @@ macro_rules! construct_uint {
             type Output = $name;
 
             fn div(self, other: $name) -> $name {
-                let mut sub_copy = self;
-                let mut shift_copy = other;
-                let mut ret = [0u64; $n_words];
-        
-                let my_bits = self.bits();
-                let your_bits = other.bits();
-
-                // Check for division by 0
-                assert!(your_bits != 0);
-
-                // Early return in case we are dividing by a larger number than us
-                if my_bits < your_bits {
-                    return $name(ret);
-                }
-
-                // Bitwise long division
-                let mut shift = my_bits - your_bits;
-                shift_copy = shift_copy << shift;
-                loop {
-                    if sub_copy >= shift_copy {
-                        ret[shift / 64] |= 1 << (shift % 64);
-                        sub_copy = sub_copy - shift_copy;
-                    }
-                    shift_copy = shift_copy >> 1;
-                    if shift == 0 { break; }
-                    shift -= 1;
-                }
-
-                $name(ret)
+                self.div_rem(other).0
             }
         }
 
-        impl BitArray for $name {
+        impl ::std::ops::Rem<$name> for $name {
+            type Output = $name;
+
+            fn rem(self, other: $name) -> $name {
+                self.div_rem(other).1
+            }
+        }
+
+        impl $crate::util::BitArray for $name {
             #[inline]
             fn bit(&self, index: usize) -> bool {
                 let &$name(ref arr) = self;
@@ -206,15 +256,9 @@ macro_rules! construct_uint {
                 (0x40 * ($n_words - 1)) + arr[$n_words - 1].trailing_zeros() as usize
             }
 
-            fn zero() -> $name { $name([0; $n_words]) }
+            fn zero() -> $name { Default::default() }
             fn one() -> $name {
                 $name({ let mut ret = [0; $n_words]; ret[0] = 1; ret })
-            }
-        }
-
-        impl ::std::default::Default for $name {
-            fn default() -> $name {
-                BitArray::zero()
             }
         }
 
@@ -319,8 +363,8 @@ macro_rules! construct_uint {
             }
         }
 
-        impl fmt::Debug for $name {
-            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        impl ::std::fmt::Debug for $name {
+            fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
                 let &$name(ref data) = self;
                 write!(f, "0x")?;
                 for ch in data.iter().rev() {
@@ -330,18 +374,14 @@ macro_rules! construct_uint {
             }
         }
 
-        impl fmt::Display for $name {
-            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                <dyn fmt::Debug>::fmt(self, f)
-            }
-        }
+        display_from_debug!($name);
 
-        impl ::consensus::Encodable for $name {
+        impl $crate::consensus::Encodable for $name {
             #[inline]
             fn consensus_encode<S: ::std::io::Write>(
                 &self,
                 mut s: S,
-            ) -> Result<usize, encode::Error> {
+            ) -> Result<usize, ::std::io::Error> {
                 let &$name(ref data) = self;
                 let mut len = 0;
                 for word in data.iter() {
@@ -351,11 +391,11 @@ macro_rules! construct_uint {
             }
         }
 
-        impl ::consensus::Decodable for $name {
+        impl $crate::consensus::Decodable for $name {
             fn consensus_decode<D: ::std::io::Read>(
                 mut d: D,
-            ) -> Result<$name, encode::Error> {
-                use consensus::Decodable;
+            ) -> Result<$name, $crate::consensus::encode::Error> {
+                use $crate::consensus::Decodable;
                 let mut ret: [u64; $n_words] = [0; $n_words];
                 for i in 0..$n_words {
                     ret[i] = Decodable::consensus_decode(&mut d)?;
@@ -397,7 +437,7 @@ impl Uint256 {
 #[cfg(test)]
 mod tests {
     use consensus::{deserialize, serialize};
-    use util::uint::Uint256;
+    use util::uint::{Uint256, Uint128};
     use util::BitArray;
 
     #[test]
@@ -456,6 +496,16 @@ mod tests {
     }
 
     #[test]
+    pub fn uint_from_be_bytes() {
+        assert_eq!(Uint128::from_be_bytes([0x1b, 0xad, 0xca, 0xfe, 0xde, 0xad, 0xbe, 0xef, 0xde, 0xaf, 0xba, 0xbe, 0x2b, 0xed, 0xfe, 0xed]),
+                   Uint128([0xdeafbabe2bedfeed, 0x1badcafedeadbeef]));
+
+        assert_eq!(Uint256::from_be_bytes([0x1b, 0xad, 0xca, 0xfe, 0xde, 0xad, 0xbe, 0xef, 0xde, 0xaf, 0xba, 0xbe, 0x2b, 0xed, 0xfe, 0xed,
+                                           0xba, 0xad, 0xf0, 0x0d, 0xde, 0xfa, 0xce, 0xda, 0x11, 0xfe, 0xd2, 0xba, 0xd1, 0xc0, 0xff, 0xe0]),
+                   Uint256([0x11fed2bad1c0ffe0, 0xbaadf00ddefaceda, 0xdeafbabe2bedfeed, 0x1badcafedeadbeef]));
+    }
+
+    #[test]
     pub fn uint256_arithmetic_test() {
         let init = Uint256::from_u64(0xDEADBEEFDEADBEEF).unwrap();
         let copy = init;
@@ -483,6 +533,14 @@ mod tests {
                    Uint256::from_u64(21).unwrap());
         let div = mult / Uint256::from_u64(300).unwrap();
         assert_eq!(div, Uint256([0x9F30411021524112u64, 0x0001BD5B7DDFBD5A, 0, 0]));
+
+        assert_eq!(Uint256::from_u64(105).unwrap() % Uint256::from_u64(5).unwrap(),
+                   Uint256::from_u64(0).unwrap());
+        assert_eq!(Uint256::from_u64(35498456).unwrap() % Uint256::from_u64(3435).unwrap(),
+                   Uint256::from_u64(1166).unwrap());
+        let rem_src = mult * Uint256::from_u64(39842).unwrap() + Uint256::from_u64(9054).unwrap();
+        assert_eq!(rem_src % Uint256::from_u64(39842).unwrap(),
+                   Uint256::from_u64(9054).unwrap());
         // TODO: bit inversion
     }
 
@@ -555,4 +613,3 @@ mod tests {
         assert_eq!(end2.ok(), Some(start2));
     }
 }
-

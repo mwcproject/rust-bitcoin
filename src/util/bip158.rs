@@ -49,16 +49,18 @@ use std::collections::HashSet;
 use std::error;
 use std::fmt::{Display, Formatter};
 use std::io::Cursor;
+use std::cmp::Ordering;
 
-use hashes::{Hash, sha256d, siphash24};
-use byteorder::{ByteOrder, LittleEndian};
+
+use hashes::{Hash, siphash24};
+use hash_types::{BlockHash, FilterHash, FilterHeader};
 
 use blockdata::block::Block;
 use blockdata::script::Script;
 use blockdata::transaction::OutPoint;
 use consensus::{Decodable, Encodable};
 use consensus::encode::VarInt;
-use util::hash::BitcoinHash;
+use util::endian;
 
 /// Golomb encoding parameter as in BIP-158, see also https://gist.github.com/sipa/576d5f09c3b86c3b1b75598d799fc845
 const P: u8 = 19;
@@ -73,14 +75,7 @@ pub enum Error {
     Io(io::Error),
 }
 
-impl error::Error for Error {
-    fn description(&self) -> &str {
-        match *self {
-            Error::UtxoMissing(_) => "unresolved UTXO",
-            Error::Io(_) => "IO Error"
-        }
-    }
-}
+impl error::Error for Error {}
 
 impl Display for Error {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
@@ -99,19 +94,27 @@ impl From<io::Error> for Error {
 
 
 /// a computed or read block filter
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockFilter {
     /// Golomb encoded filter
     pub content: Vec<u8>
 }
 
+impl FilterHash {
+    /// compute the filter header from a filter hash and previous filter header
+    pub fn filter_header(&self, previous_filter_header: &FilterHeader) -> FilterHeader {
+        let mut header_data = [0u8; 64];
+        header_data[0..32].copy_from_slice(&self[..]);
+        header_data[32..64].copy_from_slice(&previous_filter_header[..]);
+        FilterHeader::hash(&header_data)
+    }
+}
+
 impl BlockFilter {
     /// compute this filter's id in a chain of filters
-    pub fn filter_id(&self, previous_filter_id: &sha256d::Hash) -> sha256d::Hash {
-        let filter_hash = sha256d::Hash::hash(self.content.as_slice());
-        let mut header_data = [0u8; 64];
-        header_data[0..32].copy_from_slice(&filter_hash[..]);
-        header_data[32..64].copy_from_slice(&previous_filter_id[..]);
-        sha256d::Hash::hash(&header_data)
+    pub fn filter_header(&self, previous_filter_header: &FilterHeader) -> FilterHeader {
+        let filter_hash = FilterHash::hash(self.content.as_slice());
+        filter_hash.filter_header(previous_filter_header)
     }
 
     /// create a new filter from pre-computed data
@@ -133,13 +136,13 @@ impl BlockFilter {
     }
 
     /// match any query pattern
-    pub fn match_any(&self, block_hash: &sha256d::Hash, query: &mut dyn Iterator<Item=&[u8]>) -> Result<bool, Error> {
+    pub fn match_any(&self, block_hash: &BlockHash, query: &mut dyn Iterator<Item=&[u8]>) -> Result<bool, Error> {
         let filter_reader = BlockFilterReader::new(block_hash);
         filter_reader.match_any(&mut Cursor::new(self.content.as_slice()), query)
     }
 
     /// match all query pattern
-    pub fn match_all(&self, block_hash: &sha256d::Hash, query: &mut dyn Iterator<Item=&[u8]>) -> Result<bool, Error> {
+    pub fn match_all(&self, block_hash: &BlockHash, query: &mut dyn Iterator<Item=&[u8]>) -> Result<bool, Error> {
         let filter_reader = BlockFilterReader::new(block_hash);
         filter_reader.match_all(&mut Cursor::new(self.content.as_slice()), query)
     }
@@ -154,9 +157,9 @@ pub struct BlockFilterWriter<'a> {
 impl<'a> BlockFilterWriter<'a> {
     /// Create a block filter writer
     pub fn new(writer: &'a mut dyn io::Write, block: &'a Block) -> BlockFilterWriter<'a> {
-        let block_hash_as_int = block.bitcoin_hash().into_inner();
-        let k0 = LittleEndian::read_u64(&block_hash_as_int[0..8]);
-        let k1 = LittleEndian::read_u64(&block_hash_as_int[8..16]);
+        let block_hash_as_int = block.block_hash().into_inner();
+        let k0 = endian::slice_to_u64_le(&block_hash_as_int[0..8]);
+        let k1 = endian::slice_to_u64_le(&block_hash_as_int[8..16]);
         let writer = GCSFilterWriter::new(writer, k0, k1, M, P);
         BlockFilterWriter { block, writer }
     }
@@ -206,10 +209,10 @@ pub struct BlockFilterReader {
 
 impl BlockFilterReader {
     /// Create a block filter reader
-    pub fn new(block_hash: &sha256d::Hash) -> BlockFilterReader {
+    pub fn new(block_hash: &BlockHash) -> BlockFilterReader {
         let block_hash_as_int = block_hash.into_inner();
-        let k0 = LittleEndian::read_u64(&block_hash_as_int[0..8]);
-        let k1 = LittleEndian::read_u64(&block_hash_as_int[8..16]);
+        let k0 = endian::slice_to_u64_le(&block_hash_as_int[0..8]);
+        let k1 = endian::slice_to_u64_le(&block_hash_as_int[8..16]);
         BlockFilterReader { reader: GCSFilterReader::new(k0, k1, M, P) }
     }
 
@@ -241,7 +244,7 @@ impl GCSFilterReader {
     pub fn match_any(&self, reader: &mut dyn io::Read, query: &mut dyn Iterator<Item=&[u8]>) -> Result<bool, Error> {
         let mut decoder = reader;
         let n_elements: VarInt = Decodable::consensus_decode(&mut decoder).unwrap_or(VarInt(0));
-        let ref mut reader = decoder;
+        let reader = &mut decoder;
         // map hashes to [0, n_elements << grp]
         let nm = n_elements.0 * self.m;
         let mut mapped = query.map(|e| map_to_range(self.filter.hash(e), nm)).collect::<Vec<_>>();
@@ -260,17 +263,17 @@ impl GCSFilterReader {
         let mut remaining = n_elements.0 - 1;
         for p in mapped {
             loop {
-                if data == p {
-                    return Ok(true);
-                } else if data < p {
-                    if remaining > 0 {
-                        data += self.filter.golomb_rice_decode(&mut reader)?;
-                        remaining -= 1;
-                    } else {
-                        return Ok(false);
+                match data.cmp(&p) {
+                    Ordering::Equal => return Ok(true),
+                    Ordering::Less => {
+                        if remaining > 0 {
+                            data += self.filter.golomb_rice_decode(&mut reader)?;
+                            remaining -= 1;
+                        } else {
+                            return Ok(false);
+                        }
                     }
-                } else {
-                    break;
+                    Ordering::Greater => break,
                 }
             }
         }
@@ -281,7 +284,7 @@ impl GCSFilterReader {
     pub fn match_all(&self, reader: &mut dyn io::Read, query: &mut dyn Iterator<Item=&[u8]>) -> Result<bool, Error> {
         let mut decoder = reader;
         let n_elements: VarInt = Decodable::consensus_decode(&mut decoder).unwrap_or(VarInt(0));
-        let ref mut reader = decoder;
+        let reader = &mut decoder;
         // map hashes to [0, n_elements << grp]
         let nm = n_elements.0 * self.m;
         let mut mapped = query.map(|e| map_to_range(self.filter.hash(e), nm)).collect::<Vec<_>>();
@@ -301,17 +304,17 @@ impl GCSFilterReader {
         let mut remaining = n_elements.0 - 1;
         for p in mapped {
             loop {
-                if data == p {
-                    break;
-                } else if data < p {
-                    if remaining > 0 {
-                        data += self.filter.golomb_rice_decode(&mut reader)?;
-                        remaining -= 1;
-                    } else {
-                        return Ok(false);
-                    }
-                } else {
-                    return Ok(false);
+                match data.cmp(&p) {
+                    Ordering::Equal => break,
+                    Ordering::Less => {
+                        if remaining > 0 {
+                            data += self.filter.golomb_rice_decode(&mut reader)?;
+                            remaining -= 1;
+                        } else {
+                            return Ok(false);
+                        }
+                    },
+                    Ordering::Greater => return Ok(false),
                 }
             }
         }
@@ -321,20 +324,7 @@ impl GCSFilterReader {
 
 // fast reduction of hash to [0, nm) range
 fn map_to_range(hash: u64, nm: u64) -> u64 {
-    // Use this once we upgrade to rustc >= 1.26
-    // ((hash as u128 * nm as u128) >> 64) as u64
-
-    #[inline]
-    fn l(n: u64) -> u64 { n & 0xffffffff }
-    #[inline]
-    fn h(n: u64) -> u64 { n >> 32 }
-
-    let a = h(hash);
-    let b = l(hash);
-    let c = h(nm);
-    let d = l(nm);
-
-    a * c + h(a * d + c * b + h(b * d))
+    ((hash as u128 * nm as u128) >> 64) as u64
 }
 
 /// Colomb-Rice encoded filter writer
@@ -423,7 +413,7 @@ impl GCSFilter {
             q += 1;
         }
         let r = reader.read(self.p)?;
-        return Ok((q << self.p) + r);
+        Ok((q << self.p) + r)
     }
 
     /// Hash an arbitrary slice with siphash using parameters of this filter
@@ -523,11 +513,11 @@ mod test {
     use std::collections::{HashSet, HashMap};
     use std::io::Cursor;
 
+    use hash_types::BlockHash;
     use hashes::hex::FromHex;
 
     use super::*;
 
-    extern crate hex;
     extern crate serde_json;
     use self::serde_json::{Value};
 
@@ -555,19 +545,19 @@ mod test {
 
         let testdata = serde_json::from_str::<Value>(data).unwrap().as_array().unwrap().clone();
         for t in testdata.iter().skip(1) {
-            let block_hash = sha256d::Hash::from_hex(&t.get(1).unwrap().as_str().unwrap()).unwrap();
-            let block: Block = deserialize(hex::decode(&t.get(2).unwrap().as_str().unwrap().as_bytes()).unwrap().as_slice()).unwrap();
-            assert_eq!(block.bitcoin_hash(), block_hash);
+            let block_hash = BlockHash::from_hex(&t.get(1).unwrap().as_str().unwrap()).unwrap();
+            let block: Block = deserialize(&Vec::from_hex(&t.get(2).unwrap().as_str().unwrap()).unwrap()).unwrap();
+            assert_eq!(block.block_hash(), block_hash);
             let scripts = t.get(3).unwrap().as_array().unwrap();
-            let previous_filter_id = sha256d::Hash::from_hex(&t.get(4).unwrap().as_str().unwrap()).unwrap();
-            let filter_content = hex::decode(&t.get(5).unwrap().as_str().unwrap().as_bytes()).unwrap();
-            let filter_id = sha256d::Hash::from_hex(&t.get(6).unwrap().as_str().unwrap()).unwrap();
+            let previous_filter_header = FilterHeader::from_hex(&t.get(4).unwrap().as_str().unwrap()).unwrap();
+            let filter_content = Vec::from_hex(&t.get(5).unwrap().as_str().unwrap()).unwrap();
+            let filter_header = FilterHeader::from_hex(&t.get(6).unwrap().as_str().unwrap()).unwrap();
 
             let mut txmap = HashMap::new();
             let mut si = scripts.iter();
             for tx in block.txdata.iter().skip(1) {
                 for input in tx.input.iter() {
-                    txmap.insert(input.previous_output.clone(), Script::from(hex::decode(si.next().unwrap().as_str().unwrap()).unwrap()));
+                    txmap.insert(input.previous_output.clone(), Script::from(Vec::from_hex(si.next().unwrap().as_str().unwrap()).unwrap()));
                 }
             }
 
@@ -582,8 +572,8 @@ mod test {
 
             assert_eq!(test_filter.content, filter.content);
 
-            let block_hash = &block.header.bitcoin_hash();
-            assert!(filter.match_all(&block_hash, &mut txmap.iter()
+            let block_hash = &block.block_hash();
+            assert!(filter.match_all(block_hash, &mut txmap.iter()
                 .filter_map(|(_, s)| if !s.is_empty() { Some(s.as_bytes()) } else { None })).unwrap());
 
             for (_, script) in &txmap {
@@ -594,7 +584,7 @@ mod test {
                 }
             }
 
-            assert_eq!(filter_id, filter.filter_id(&previous_filter_id));
+            assert_eq!(filter_header, filter.filter_header(&previous_filter_header));
         }
     }
 
@@ -602,22 +592,22 @@ mod test {
     fn test_filter () {
         let mut patterns = HashSet::new();
 
-        patterns.insert(hex::decode("000000").unwrap());
-        patterns.insert(hex::decode("111111").unwrap());
-        patterns.insert(hex::decode("222222").unwrap());
-        patterns.insert(hex::decode("333333").unwrap());
-        patterns.insert(hex::decode("444444").unwrap());
-        patterns.insert(hex::decode("555555").unwrap());
-        patterns.insert(hex::decode("666666").unwrap());
-        patterns.insert(hex::decode("777777").unwrap());
-        patterns.insert(hex::decode("888888").unwrap());
-        patterns.insert(hex::decode("999999").unwrap());
-        patterns.insert(hex::decode("aaaaaa").unwrap());
-        patterns.insert(hex::decode("bbbbbb").unwrap());
-        patterns.insert(hex::decode("cccccc").unwrap());
-        patterns.insert(hex::decode("dddddd").unwrap());
-        patterns.insert(hex::decode("eeeeee").unwrap());
-        patterns.insert(hex::decode("ffffff").unwrap());
+        patterns.insert(Vec::from_hex("000000").unwrap());
+        patterns.insert(Vec::from_hex("111111").unwrap());
+        patterns.insert(Vec::from_hex("222222").unwrap());
+        patterns.insert(Vec::from_hex("333333").unwrap());
+        patterns.insert(Vec::from_hex("444444").unwrap());
+        patterns.insert(Vec::from_hex("555555").unwrap());
+        patterns.insert(Vec::from_hex("666666").unwrap());
+        patterns.insert(Vec::from_hex("777777").unwrap());
+        patterns.insert(Vec::from_hex("888888").unwrap());
+        patterns.insert(Vec::from_hex("999999").unwrap());
+        patterns.insert(Vec::from_hex("aaaaaa").unwrap());
+        patterns.insert(Vec::from_hex("bbbbbb").unwrap());
+        patterns.insert(Vec::from_hex("cccccc").unwrap());
+        patterns.insert(Vec::from_hex("dddddd").unwrap());
+        patterns.insert(Vec::from_hex("eeeeee").unwrap());
+        patterns.insert(Vec::from_hex("ffffff").unwrap());
 
         let mut out = Cursor::new(Vec::new());
         {
@@ -632,8 +622,8 @@ mod test {
 
         {
             let mut query = Vec::new();
-            query.push(hex::decode("abcdef").unwrap());
-            query.push(hex::decode("eeeeee").unwrap());
+            query.push(Vec::from_hex("abcdef").unwrap());
+            query.push(Vec::from_hex("eeeeee").unwrap());
 
             let reader = GCSFilterReader::new(0, 0, M, P);
             let mut input = Cursor::new(bytes.clone());
@@ -641,8 +631,8 @@ mod test {
         }
         {
             let mut query = Vec::new();
-            query.push(hex::decode("abcdef").unwrap());
-            query.push(hex::decode("123456").unwrap());
+            query.push(Vec::from_hex("abcdef").unwrap());
+            query.push(Vec::from_hex("123456").unwrap());
 
             let reader = GCSFilterReader::new(0, 0, M, P);
             let mut input = Cursor::new(bytes.clone());
@@ -663,7 +653,7 @@ mod test {
             for p in &patterns {
                 query.push(p.clone());
             }
-            query.push(hex::decode("abcdef").unwrap());
+            query.push(Vec::from_hex("abcdef").unwrap());
             let mut input = Cursor::new(bytes.clone());
             assert!(!reader.match_all(&mut input, &mut query.iter().map(|v| v.as_slice())).unwrap());
         }

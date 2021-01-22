@@ -16,9 +16,9 @@
 
 use std::{error, fmt, str, slice, iter};
 
-use byteorder::{ByteOrder, LittleEndian};
-
 use hashes::{sha256d, Hash};
+
+use util::endian;
 
 /// An error that might occur during base58 decoding
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -52,19 +52,7 @@ impl fmt::Display for Error {
     }
 }
 
-impl error::Error for Error {
-    fn cause(&self) -> Option<&dyn error::Error> { None }
-    fn description(&self) -> &'static str {
-        match *self {
-            Error::BadByte(_) => "invalid b58 character",
-            Error::BadChecksum(_, _) => "invalid b58ck checksum",
-            Error::InvalidLength(_) => "invalid length for b58 type",
-            Error::InvalidVersion(_) => "invalid version for b58 type",
-            Error::TooShort(_) => "b58ck data less than 4 bytes",
-            Error::Other(_) => "unknown b58 error"
-        }
-    }
-}
+impl error::Error for Error {}
 
 /// Vector-like object that holds the first 100 elements on the stack. If more space is needed it
 /// will be allocated on the heap.
@@ -103,7 +91,7 @@ impl<T: Default + Copy> SmallVec<T> {
     }
 }
 
-static BASE58_CHARS: &'static [u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+static BASE58_CHARS: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
 static BASE58_DIGITS: [Option<u8>; 128] = [
     None,     None,     None,     None,     None,     None,     None,     None,     // 0-7
@@ -131,7 +119,7 @@ pub fn from(data: &str) -> Result<Vec<u8>, Error> {
     // Build in base 256
     for d58 in data.bytes() {
         // Compute "X = X * 58 + next_digit" in base 256
-        if d58 as usize > BASE58_DIGITS.len() {
+        if d58 as usize >= BASE58_DIGITS.len() {
             return Err(Error::BadByte(d58));
         }
         let mut carry = match BASE58_DIGITS[d58 as usize] {
@@ -162,8 +150,8 @@ pub fn from_check(data: &str) -> Result<Vec<u8>, Error> {
         return Err(Error::TooShort(ret.len()));
     }
     let ck_start = ret.len() - 4;
-    let expected = LittleEndian::read_u32(&sha256d::Hash::hash(&ret[..ck_start])[..4]);
-    let actual = LittleEndian::read_u32(&ret[ck_start..(ck_start + 4)]);
+    let expected = endian::slice_to_u32_le(&sha256d::Hash::hash(&ret[..ck_start])[..4]);
+    let actual = endian::slice_to_u32_le(&ret[ck_start..(ck_start + 4)]);
     if expected != actual {
         return Err(Error::BadChecksum(expected, actual));
     }
@@ -249,10 +237,11 @@ pub fn check_encode_slice_to_fmt(fmt: &mut fmt::Formatter, data: &[u8]) -> fmt::
     format_iter(fmt, iter)
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hex::decode as hex_decode;
+    use hashes::hex::FromHex;
 
     #[test]
     fn test_base58_encode() {
@@ -275,7 +264,7 @@ mod tests {
         assert_eq!(&res, exp);
 
         // Addresses
-        let addr = hex_decode("00f8917303bfa8ef24f292e8fa1419b20460ba064d").unwrap();
+        let addr = Vec::from_hex("00f8917303bfa8ef24f292e8fa1419b20460ba064d").unwrap();
         assert_eq!(&check_encode_slice(&addr[..]), "1PfJpZsjreyVrqeoAfabrRwwjQyoSQMmHH");
       }
 
@@ -293,7 +282,9 @@ mod tests {
 
         // Addresses
         assert_eq!(from_check("1PfJpZsjreyVrqeoAfabrRwwjQyoSQMmHH").ok(),
-                   Some(hex_decode("00f8917303bfa8ef24f292e8fa1419b20460ba064d").unwrap()))
+                   Some(Vec::from_hex("00f8917303bfa8ef24f292e8fa1419b20460ba064d").unwrap()));
+        // Non Base58 char.
+        assert_eq!(from("¢").unwrap_err(), Error::BadByte(194));
     }
 
     #[test]
@@ -302,6 +293,12 @@ mod tests {
         let v: Vec<u8> = from_check(s).unwrap();
         assert_eq!(check_encode_slice(&v[..]), s);
         assert_eq!(from_check(&check_encode_slice(&v[..])).ok(), Some(v));
+
+        // Check that empty slice passes roundtrip.
+        assert_eq!(from_check(&check_encode_slice(&[])), Ok(vec![]));
+        // Check that `len > 4` is enforced.
+        assert_eq!(from_check(&encode_slice(&[1,2,3])), Err(Error::TooShort(3)));
+
     }
 }
 

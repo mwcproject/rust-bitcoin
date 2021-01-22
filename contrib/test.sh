@@ -1,6 +1,19 @@
 #!/bin/sh -ex
 
-FEATURES="bitcoinconsensus use-serde"
+FEATURES="base64 bitcoinconsensus use-serde rand"
+
+pin_common_verions() {
+    cargo generate-lockfile --verbose
+    cargo update -p cc --precise "1.0.41" --verbose
+    cargo update -p serde --precise "1.0.98" --verbose
+    cargo update -p serde_derive --precise "1.0.98" --verbose
+}
+
+# Pin `cc` for Rust 1.29
+if [ -n "$PIN_VERSIONS" ]; then
+    pin_common_verions
+    cargo update -p byteorder --precise "1.3.4"
+fi
 
 if [ "$DO_COV" = true ]
 then
@@ -15,6 +28,8 @@ then
 fi
 
 # Test without any features first
+cargo test --verbose --no-default-features
+# Then test with the default features
 cargo test --verbose
 
 # Test each feature
@@ -37,4 +52,19 @@ fi
 if [ "$DO_BENCH" = true ]
 then
     cargo bench --features unstable
+fi
+
+# Use as dependency if told to
+if [ -n "$AS_DEPENDENCY" ]
+then
+    cargo new dep_test
+    cd dep_test
+    echo 'bitcoin = { path = "..", features = ["use-serde"] }' >> Cargo.toml
+
+    # Pin `cc` for Rust 1.29
+    if [ -n "$PIN_VERSIONS" ]; then
+        pin_common_verions
+    fi
+
+    cargo test --verbose
 fi
