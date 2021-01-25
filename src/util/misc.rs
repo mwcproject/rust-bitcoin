@@ -33,7 +33,7 @@ mod message_signing {
 
     use hashes::sha256d;
     use secp256k1;
-    use secp256k1::recovery::{RecoveryId, RecoverableSignature};
+    use secp256k1::{RecoveryId, RecoverableSignature};
 
     use util::key::PublicKey;
     use util::address::{Address, AddressType};
@@ -129,9 +129,9 @@ mod message_signing {
         /// Attempt to recover a public key from the signature and the signed message.
         ///
         /// To get the message hash from a message, use [signed_msg_hash].
-        pub fn recover_pubkey<C: secp256k1::Verification>(
+        pub fn recover_pubkey(
             &self,
-            secp_ctx: &secp256k1::Secp256k1<C>,
+            secp_ctx: &secp256k1::Secp256k1,
             msg_hash: sha256d::Hash
         ) -> Result<PublicKey, secp256k1::Error> {
             let msg = secp256k1::Message::from_slice(&msg_hash[..])?;
@@ -145,9 +145,9 @@ mod message_signing {
         /// Verify that the signature signs the message and was signed by the given address.
         ///
         /// To get the message hash from a message, use [signed_msg_hash].
-        pub fn is_signed_by_address<C: secp256k1::Verification>(
+        pub fn is_signed_by_address(
             &self,
-            secp_ctx: &secp256k1::Secp256k1<C>,
+            secp_ctx: &secp256k1::Secp256k1,
             address: &Address,
             msg_hash: sha256d::Hash
         ) -> Result<bool, secp256k1::Error> {
@@ -239,6 +239,59 @@ pub fn signed_msg_hash(msg: &str) -> sha256d::Hash {
     msg_len.consensus_encode(&mut engine).unwrap();
     engine.input(msg.as_bytes());
     sha256d::Hash::from_engine(engine)
+}
+
+/// Helper function to convert hex nibble characters to their respective value
+#[inline]
+fn hex_val(c: u8) -> Result<u8, encode::Error> {
+    let res = match c {
+        b'0' ..= b'9' => c - '0' as u8,
+        b'a' ..= b'f' => c - 'a' as u8 + 10,
+        b'A' ..= b'F' => c - 'A' as u8 + 10,
+        _ => return Err(encode::Error::UnexpectedHexDigit(c as char)),
+    };
+    Ok(res)
+}
+
+/// Convert a hexadecimal-encoded string to its corresponding bytes
+pub fn hex_bytes(data: &str) -> Result<Vec<u8>, encode::Error> {
+    // This code is optimized to be as fast as possible without using unsafe or platform specific
+    // features. If you want to refactor it please make sure you don't introduce performance
+    // regressions (run the benchmark with `cargo bench --features unstable`).
+
+    // If the hex string has an uneven length fail early
+    if data.len() % 2 != 0 {
+        return Err(encode::Error::ParseFailed("hexstring of odd length"));
+    }
+
+    // Preallocate the uninitialized memory for the byte array
+    let mut res = Vec::with_capacity(data.len() / 2);
+
+    let mut hex_it = data.bytes();
+    loop {
+        // Get most significant nibble of current byte or end iteration
+        let msn = match hex_it.next() {
+            None => break,
+            Some(x) => x,
+        };
+
+        // Get least significant nibble of current byte
+        let lsn = match hex_it.next() {
+            None => unreachable!("len % 2 == 0"),
+            Some(x) => x,
+        };
+
+        // Convert bytes representing characters to their represented value and combine lsn and msn.
+        // The and_then and map are crucial for performance, in comparison to using ? and then
+        // using the results of that for the calculation it's nearly twice as fast. Using bit
+        // shifting and or instead of multiply and add on the other hand doesn't show a significant
+        // increase in performance.
+        match hex_val(msn).and_then(|msn_val| hex_val(lsn).map(|lsn_val| msn_val * 16 + lsn_val)) {
+            Ok(x) => res.push(x),
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(res)
 }
 
 #[cfg(test)]

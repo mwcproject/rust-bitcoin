@@ -20,7 +20,7 @@
 
 #![cfg_attr(not(test), deprecated)]
 
-use secp256k1::{self, Secp256k1};
+use secp256k1::{self, Secp256k1, SecretKey};
 use PrivateKey;
 use PublicKey;
 use hashes::{sha256, Hash, HashEngine, Hmac, HmacEngine};

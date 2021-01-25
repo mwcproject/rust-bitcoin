@@ -82,9 +82,9 @@ impl PublicKey {
     /// Returns bitcoin 160-bit hash of the public key
     pub fn pubkey_hash(&self) -> PubkeyHash {
         if self.compressed {
-            PubkeyHash::hash(&self.key.serialize())
+            PubkeyHash::hash(&self.key.serialize_vec(true).to_vec())
         } else {
-            PubkeyHash::hash(&self.key.serialize_uncompressed())
+            PubkeyHash::hash(&self.key.serialize_vec( false).to_vec())
         }
     }
 
@@ -92,7 +92,7 @@ impl PublicKey {
     pub fn wpubkey_hash(&self) -> Option<WPubkeyHash> {
         if self.compressed {
             Some(WPubkeyHash::from_inner(
-                hash160::Hash::hash(&self.key.serialize()).into_inner()
+                hash160::Hash::hash(&self.key.serialize_vec(true).to_vec()).into_inner()
             ))
         } else {
             // We can't create witness pubkey hashes for an uncompressed
@@ -104,9 +104,9 @@ impl PublicKey {
     /// Write the public key into a writer
     pub fn write_into<W: io::Write>(&self, mut writer: W) -> Result<(), io::Error> {
         if self.compressed {
-            writer.write_all(&self.key.serialize())
+            writer.write_all(&self.key.serialize_vec(true).to_vec())
         } else {
-            writer.write_all(&self.key.serialize_uncompressed())
+            writer.write_all(&self.key.serialize_vec(false).to_vec())
         }
     }
 
@@ -171,9 +171,10 @@ impl fmt::Display for PublicKey {
 }
 
 impl FromStr for PublicKey {
-    type Err = encode::Error;
-    fn from_str(s: &str) -> Result<PublicKey, encode::Error> {
-        let data = hex_bytes(s)?;
+    type Err = Error;
+    fn from_str(s: &str) -> Result<PublicKey, Error> {
+        let data = hex_bytes(s)
+            .map_err(|e| base58::Error::Other(format!("Unable to parse the HEX {}, {}", s, e)) )?;
         let key = secp256k1::PublicKey::from_slice(&data)?;
         Ok(PublicKey {
             key: key,

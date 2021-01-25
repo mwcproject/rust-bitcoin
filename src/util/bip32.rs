@@ -64,7 +64,7 @@ pub struct ExtendedPrivKey {
 serde_string_impl!(ExtendedPrivKey, "a BIP-32 extended private key");
 
 /// Extended public key
-#[derive(Copy, Clone, PartialEq, Eq, Debug, PartialOrd, Ord, Hash)]
+#[derive(Clone, PartialEq, Eq, Debug, PartialOrd, Ord, Hash)]
 pub struct ExtendedPubKey {
     /// The network this key is to be used on
     pub network: Network,
@@ -607,7 +607,7 @@ impl ExtendedPrivKey {
     }
 
     /// Returns the HASH160 of the public key belonging to the xpriv
-    pub fn identifier<C: secp256k1::Signing>(&self, secp: &Secp256k1<C>) -> XpubIdentifier {
+    pub fn identifier(&self, secp: &Secp256k1) -> XpubIdentifier {
         ExtendedPubKey::from_private(secp, self).identifier()
     }
 
@@ -653,7 +653,7 @@ impl ExtendedPubKey {
             }
             ChildNumber::Normal { index: n } => {
                 let mut hmac_engine: HmacEngine<sha512::Hash> = HmacEngine::new(&self.chain_code[..]);
-                hmac_engine.input(&self.public_key.key.serialize()[..]);
+                hmac_engine.input(&self.public_key.key.serialize_vec(true));
                 hmac_engine.input(&endian::u32_to_array_be(n));
 
                 let hmac_result: Hmac<sha512::Hash> = Hmac::from_engine(hmac_engine);
@@ -676,8 +676,8 @@ impl ExtendedPubKey {
         i: ChildNumber,
     ) -> Result<ExtendedPubKey, Error> {
         let (sk, chain_code) = self.ckd_pub_tweak(i)?;
-        let mut pk = self.public_key;
-        pk.key.add_exp_assign(secp, &sk[..]).map_err(Error::Ecdsa)?;
+        let mut pk = self.public_key.clone();
+        pk.key.add_exp_assign(secp, &sk.key).map_err(Error::Ecdsa)?;
 
         Ok(ExtendedPubKey {
             network: self.network,
@@ -724,7 +724,7 @@ impl ExtendedPubKey {
         ret[5..9].copy_from_slice(&self.parent_fingerprint[..]);
         ret[9..13].copy_from_slice(&endian::u32_to_array_be(u32::from(self.child_number)));
         ret[13..45].copy_from_slice(&self.chain_code[..]);
-        ret[45..78].copy_from_slice(&self.public_key.key.serialize()[..]);
+        ret[45..78].copy_from_slice(&self.public_key.key.serialize_vec(true));
         ret
     }
 

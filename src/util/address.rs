@@ -394,7 +394,7 @@ impl Display for Address {
 
 /// Extract the bech32 prefix.
 /// Returns the same slice when no prefix is found.
-fn find_bech32_prefix(bech32: &str) -> &str {
+pub fn find_bech32_prefix(bech32: &str) -> &str {
     // Split at the last occurrence of the separator character '1'.
     match bech32.rfind('1') {
         None => bech32,

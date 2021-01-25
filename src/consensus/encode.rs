@@ -80,6 +80,8 @@ pub enum Error {
     ParseFailed(&'static str),
     /// Unsupported Segwit flag
     UnsupportedSegwitFlag(u8),
+    /// Unexpected hex digit
+    UnexpectedHexDigit(char),
 }
 
 impl fmt::Display for Error {
@@ -98,6 +100,7 @@ impl fmt::Display for Error {
             Error::ParseFailed(ref e) => write!(f, "parse failed: {}", e),
             Error::UnsupportedSegwitFlag(ref swflag) => write!(f,
                 "unsupported segwit version: {}", swflag),
+            Error::UnexpectedHexDigit(ref d) => write!(f, "unexpected hex digit: {}", d),
         }
     }
 }
@@ -113,7 +116,8 @@ impl error::Error for Error {
             | Error::NonMinimalVarInt
             | Error::UnknownNetworkMagic(..)
             | Error::ParseFailed(..)
-            | Error::UnsupportedSegwitFlag(..) => None,
+            | Error::UnsupportedSegwitFlag(..)
+            | Error::UnexpectedHexDigit(..) => None,
         }
     }
 }

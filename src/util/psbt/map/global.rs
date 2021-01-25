@@ -181,7 +181,7 @@ impl Map for Global {
 
         // Merging xpubs
         for (xpub, (fingerprint1, derivation1)) in other.xpub {
-            match self.xpub.entry(xpub) {
+            match self.xpub.entry(xpub.clone()) {
                 Entry::Vacant(entry) => {
                     entry.insert((fingerprint1, derivation1));
                 },
