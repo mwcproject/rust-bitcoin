@@ -213,30 +213,112 @@ pub struct Address {
     pub payload: Payload,
     /// The network on which this address is usable
     pub network: Network,
+    // Address can belog to different Coins. Befault is BTC.  Here are parameters that defines the address family.
+    // https://github.com/libbitcoin/libbitcoin-system/wiki/Altcoin-Version-Mappings#bip44-altcoin-version-mapping-table
+    /// Bech32 mainnet prefix
+    pub prefix_bech32_mainnet: String,
+    /// Bech32 testnet prefix
+    pub prefix_bech32_testnet: String,
+    /// Checksum: Mainnet Pubkey Hash address
+    pub version_pubkeyhash_mainnet: u8,
+    /// Checksum: Testnet Pubkey Hash address
+    pub version_pubkeyhash_testnet: u8,
+    /// Checksum: Mainnet Script Hash address
+    pub version_scripthash_mainnet: u8,
+    /// Checksum: Testnet Script Hash address
+    pub version_scripthash_testnet: u8,
 }
 serde_string_impl!(Address, "a Bitcoin address");
 
 impl Address {
+    /// Create empty address as BTC
+    pub fn new_btc() -> Address {
+        Address {
+            network: Network::Signet, // we don't don't support it, it is invalid value for MWC swaps
+            payload: Payload::ScriptHash( ScriptHash::default() ),
+            prefix_bech32_mainnet: "bc".to_string(),
+            prefix_bech32_testnet: "tb".to_string(),
+            version_pubkeyhash_mainnet: 0,
+            version_scripthash_mainnet: 5,
+            version_pubkeyhash_testnet: 111,
+            version_scripthash_testnet: 196,
+        }
+    }
+
+    /// Convert address to BTC syntax
+    pub fn to_btc(self) -> Address {
+        Address {
+            network: self.network, // we don't don't support it, it is invalid value for MWC swaps
+            payload: self.payload,
+            prefix_bech32_mainnet: "bc".to_string(),
+            prefix_bech32_testnet: "tb".to_string(),
+            version_pubkeyhash_mainnet: 0,
+            version_scripthash_mainnet: 5,
+            version_pubkeyhash_testnet: 111,
+            version_scripthash_testnet: 196,
+        }
+    }
+
+    /// Create empty address to LTC syntax
+    pub fn new_ltc() -> Address {
+        Address {
+            network: Network::Signet, // we don't don't support it, it is invalid value for MWC swaps
+            payload: Payload::ScriptHash( ScriptHash::default() ),
+            prefix_bech32_mainnet: "ltc".to_string(),
+            prefix_bech32_testnet: "tltc".to_string(),
+            version_pubkeyhash_mainnet: 48,
+            version_scripthash_mainnet: 50,
+            version_pubkeyhash_testnet: 111,
+            version_scripthash_testnet: 58,
+        }
+    }
+
+    /// Convert address to LTC syntax
+    pub fn to_ltc(self) -> Address {
+        Address {
+            network: self.network, // we don't don't support it, it is invalid value for MWC swaps
+            payload: self.payload,
+            prefix_bech32_mainnet: "ltc".to_string(),
+            prefix_bech32_testnet: "tltc".to_string(),
+            version_pubkeyhash_mainnet: 48,
+            version_scripthash_mainnet: 50,
+            version_pubkeyhash_testnet: 111,
+            version_scripthash_testnet: 58,
+        }
+    }
+
     /// Creates a pay to (compressed) public key hash address from a public key
     /// This is the preferred non-witness type address
     #[inline]
-    pub fn p2pkh(pk: &key::PublicKey, network: Network) -> Address {
+    pub fn p2pkh(self, pk: &key::PublicKey, network: Network) -> Address {
         let mut hash_engine = PubkeyHash::engine();
         pk.write_into(&mut hash_engine).expect("engines don't error");
 
         Address {
             network: network,
             payload: Payload::PubkeyHash(PubkeyHash::from_engine(hash_engine)),
+            prefix_bech32_mainnet: self.prefix_bech32_mainnet,
+            prefix_bech32_testnet: self.prefix_bech32_testnet,
+            version_pubkeyhash_mainnet: self.version_pubkeyhash_mainnet,
+            version_scripthash_mainnet: self.version_scripthash_mainnet,
+            version_pubkeyhash_testnet: self.version_pubkeyhash_testnet,
+            version_scripthash_testnet: self.version_scripthash_testnet,
         }
     }
 
     /// Creates a pay to script hash P2SH address from a script
     /// This address type was introduced with BIP16 and is the popular type to implement multi-sig these days.
     #[inline]
-    pub fn p2sh(script: &script::Script, network: Network) -> Address {
+    pub fn p2sh(self, script: &script::Script, network: Network) -> Address {
         Address {
             network: network,
             payload: Payload::ScriptHash(ScriptHash::hash(&script[..])),
+            prefix_bech32_mainnet: self.prefix_bech32_mainnet,
+            prefix_bech32_testnet: self.prefix_bech32_testnet,
+            version_pubkeyhash_mainnet: self.version_pubkeyhash_mainnet,
+            version_scripthash_mainnet: self.version_scripthash_mainnet,
+            version_pubkeyhash_testnet: self.version_pubkeyhash_testnet,
+            version_scripthash_testnet: self.version_scripthash_testnet,
         }
     }
 
@@ -244,7 +326,7 @@ impl Address {
     /// This is the native segwit address type for an output redeemable with a single signature
     ///
     /// Will only return an Error when an uncompressed public key is provided.
-    pub fn p2wpkh(pk: &key::PublicKey, network: Network) -> Result<Address, Error> {
+    pub fn p2wpkh(self, pk: &key::PublicKey, network: Network) -> Result<Address, Error> {
         if !pk.compressed {
             return Err(Error::UncompressedPubkey);
         }
@@ -258,6 +340,12 @@ impl Address {
                 version: bech32::u5::try_from_u8(0).expect("0<32"),
                 program: WPubkeyHash::from_engine(hash_engine)[..].to_vec(),
             },
+            prefix_bech32_mainnet: self.prefix_bech32_mainnet,
+            prefix_bech32_testnet: self.prefix_bech32_testnet,
+            version_pubkeyhash_mainnet: self.version_pubkeyhash_mainnet,
+            version_scripthash_mainnet: self.version_scripthash_mainnet,
+            version_pubkeyhash_testnet: self.version_pubkeyhash_testnet,
+            version_scripthash_testnet: self.version_scripthash_testnet,
         })
     }
 
@@ -265,7 +353,7 @@ impl Address {
     /// This is a segwit address type that looks familiar (as p2sh) to legacy clients
     ///
     /// Will only return an Error when an uncompressed public key is provided.
-    pub fn p2shwpkh(pk: &key::PublicKey, network: Network) -> Result<Address, Error> {
+    pub fn p2shwpkh(self, pk: &key::PublicKey, network: Network) -> Result<Address, Error> {
         if !pk.compressed {
             return Err(Error::UncompressedPubkey);
         }
@@ -280,23 +368,35 @@ impl Address {
         Ok(Address {
             network: network,
             payload: Payload::ScriptHash(ScriptHash::hash(builder.into_script().as_bytes())),
+            prefix_bech32_mainnet: self.prefix_bech32_mainnet,
+            prefix_bech32_testnet: self.prefix_bech32_testnet,
+            version_pubkeyhash_mainnet: self.version_pubkeyhash_mainnet,
+            version_scripthash_mainnet: self.version_scripthash_mainnet,
+            version_pubkeyhash_testnet: self.version_pubkeyhash_testnet,
+            version_scripthash_testnet: self.version_scripthash_testnet,
         })
     }
 
     /// Create a witness pay to script hash address
-    pub fn p2wsh(script: &script::Script, network: Network) -> Address {
+    pub fn p2wsh(self, script: &script::Script, network: Network) -> Address {
         Address {
             network: network,
             payload: Payload::WitnessProgram {
                 version: bech32::u5::try_from_u8(0).expect("0<32"),
                 program: WScriptHash::hash(&script[..])[..].to_vec(),
             },
+            prefix_bech32_mainnet: self.prefix_bech32_mainnet,
+            prefix_bech32_testnet: self.prefix_bech32_testnet,
+            version_pubkeyhash_mainnet: self.version_pubkeyhash_mainnet,
+            version_scripthash_mainnet: self.version_scripthash_mainnet,
+            version_pubkeyhash_testnet: self.version_pubkeyhash_testnet,
+            version_scripthash_testnet: self.version_scripthash_testnet,
         }
     }
 
     /// Create a pay to script address that embeds a witness pay to script hash address
     /// This is a segwit address type that looks familiar (as p2sh) to legacy clients
-    pub fn p2shwsh(script: &script::Script, network: Network) -> Address {
+    pub fn p2shwsh(self, script: &script::Script, network: Network) -> Address {
         let ws = script::Builder::new()
             .push_int(0)
             .push_slice(&WScriptHash::hash(&script[..])[..])
@@ -305,6 +405,12 @@ impl Address {
         Address {
             network: network,
             payload: Payload::ScriptHash(ScriptHash::hash(&ws[..])),
+            prefix_bech32_mainnet: self.prefix_bech32_mainnet,
+            prefix_bech32_testnet: self.prefix_bech32_testnet,
+            version_pubkeyhash_mainnet: self.version_pubkeyhash_mainnet,
+            version_scripthash_mainnet: self.version_scripthash_mainnet,
+            version_pubkeyhash_testnet: self.version_pubkeyhash_testnet,
+            version_scripthash_testnet: self.version_scripthash_testnet,
         }
     }
 
@@ -341,10 +447,16 @@ impl Address {
     }
 
     /// Get an [Address] from an output script (scriptPubkey).
-    pub fn from_script(script: &script::Script, network: Network) -> Option<Address> {
+    pub fn from_script(self, script: &script::Script, network: Network) -> Option<Address> {
         Some(Address {
             payload: Payload::from_script(script)?,
             network: network,
+            prefix_bech32_mainnet: self.prefix_bech32_mainnet,
+            prefix_bech32_testnet: self.prefix_bech32_testnet,
+            version_pubkeyhash_mainnet: self.version_pubkeyhash_mainnet,
+            version_scripthash_mainnet: self.version_scripthash_mainnet,
+            version_pubkeyhash_testnet: self.version_pubkeyhash_testnet,
+            version_scripthash_testnet: self.version_scripthash_testnet,
         })
     }
 
@@ -352,68 +464,19 @@ impl Address {
     pub fn script_pubkey(&self) -> script::Script {
         self.payload.script_pubkey()
     }
-}
 
-impl Display for Address {
-    fn fmt(&self, fmt: &mut Formatter) -> fmt::Result {
-        match self.payload {
-            Payload::PubkeyHash(ref hash) => {
-                let mut prefixed = [0; 21];
-                prefixed[0] = match self.network {
-                    Network::Bitcoin => 0,
-                    Network::Testnet | Network::Signet | Network::Regtest => 111,
-                };
-                prefixed[1..].copy_from_slice(&hash[..]);
-                base58::check_encode_slice_to_fmt(fmt, &prefixed[..])
-            }
-            Payload::ScriptHash(ref hash) => {
-                let mut prefixed = [0; 21];
-                prefixed[0] = match self.network {
-                    Network::Bitcoin => 5,
-                    Network::Testnet | Network::Signet | Network::Regtest => 196,
-                };
-                prefixed[1..].copy_from_slice(&hash[..]);
-                base58::check_encode_slice_to_fmt(fmt, &prefixed[..])
-            }
-            Payload::WitnessProgram {
-                version: ver,
-                program: ref prog,
-            } => {
-                let hrp = match self.network {
-                    Network::Bitcoin => "bc",
-                    Network::Testnet | Network::Signet  => "tb",
-                    Network::Regtest => "bcrt",
-                };
-                let mut bech32_writer = bech32::Bech32Writer::new(hrp, fmt)?;
-                bech32::WriteBase32::write_u5(&mut bech32_writer, ver)?;
-                bech32::ToBase32::write_base32(&prog, &mut bech32_writer)
-            }
-        }
-    }
-}
-
-/// Extract the bech32 prefix.
-/// Returns the same slice when no prefix is found.
-pub fn find_bech32_prefix(bech32: &str) -> &str {
-    // Split at the last occurrence of the separator character '1'.
-    match bech32.rfind('1') {
-        None => bech32,
-        Some(sep) => bech32.split_at(sep).0,
-    }
-}
-
-impl FromStr for Address {
-    type Err = Error;
-
-    fn from_str(s: &str) -> Result<Address, Error> {
+    /// Build address from the BTC address string.
+    pub fn from_str(self, s: &str) -> Result<Address, Error> {
         // try bech32
-        let bech32_network = match find_bech32_prefix(s) {
-            // note that upper or lowercase is allowed but NOT mixed case
-            "bc" | "BC" => Some(Network::Bitcoin),
-            "tb" | "TB" => Some(Network::Testnet), // this may also be signet
-            "bcrt" | "BCRT" => Some(Network::Regtest),
-            _ => None,
+        let prefix = find_bech32_prefix(s);
+        let bech32_network = if self.prefix_bech32_testnet.eq_ignore_ascii_case(prefix) {
+            Some(Network::Testnet)
+        } else if self.prefix_bech32_mainnet.eq_ignore_ascii_case(prefix) {
+            Some(Network::Bitcoin)
+        } else {
+            None
         };
+
         if let Some(network) = bech32_network {
             // decode as bech32
             let (_, payload) = bech32::decode(s)?;
@@ -446,6 +509,12 @@ impl FromStr for Address {
                     program: program,
                 },
                 network: network,
+                prefix_bech32_mainnet: self.prefix_bech32_mainnet,
+                prefix_bech32_testnet: self.prefix_bech32_testnet,
+                version_pubkeyhash_mainnet: self.version_pubkeyhash_mainnet,
+                version_scripthash_mainnet: self.version_scripthash_mainnet,
+                version_pubkeyhash_testnet: self.version_pubkeyhash_testnet,
+                version_scripthash_testnet: self.version_scripthash_testnet,
             });
         }
 
@@ -458,30 +527,90 @@ impl FromStr for Address {
             return Err(Error::Base58(base58::Error::InvalidLength(data.len())));
         }
 
-        let (network, payload) = match data[0] {
-            0 => (
+        let version = data[0];
+        let (network, payload) = if version == self.version_pubkeyhash_mainnet {
+            (
                 Network::Bitcoin,
                 Payload::PubkeyHash(PubkeyHash::from_slice(&data[1..]).unwrap()),
-            ),
-            5 => (
+            )
+        } else if version == self.version_scripthash_mainnet {
+            (
                 Network::Bitcoin,
                 Payload::ScriptHash(ScriptHash::from_slice(&data[1..]).unwrap()),
-            ),
-            111 => (
+            )
+        } else if version == self.version_pubkeyhash_testnet {
+            (
                 Network::Testnet,
                 Payload::PubkeyHash(PubkeyHash::from_slice(&data[1..]).unwrap()),
-            ),
-            196 => (
+            )
+        } else if version == self.version_scripthash_testnet {
+            (
                 Network::Testnet,
                 Payload::ScriptHash(ScriptHash::from_slice(&data[1..]).unwrap()),
-            ),
-            x => return Err(Error::Base58(base58::Error::InvalidVersion(vec![x]))),
+            )
+        }
+        else {
+            return Err(Error::Base58(base58::Error::InvalidVersion(vec![version])));
         };
 
         Ok(Address {
             network: network,
             payload: payload,
+            prefix_bech32_mainnet: self.prefix_bech32_mainnet,
+            prefix_bech32_testnet: self.prefix_bech32_testnet,
+            version_pubkeyhash_mainnet: self.version_pubkeyhash_mainnet,
+            version_scripthash_mainnet: self.version_scripthash_mainnet,
+            version_pubkeyhash_testnet: self.version_pubkeyhash_testnet,
+            version_scripthash_testnet: self.version_scripthash_testnet,
         })
+    }
+}
+
+impl Display for Address {
+    fn fmt(&self, fmt: &mut Formatter) -> fmt::Result {
+        match self.payload {
+            Payload::PubkeyHash(ref hash) => {
+                let mut prefixed = [0; 21];
+                prefixed[0] = match self.network {
+                    Network::Bitcoin => self.version_pubkeyhash_mainnet,
+                    Network::Testnet | Network::Signet | Network::Regtest => self.version_pubkeyhash_testnet,
+                };
+                prefixed[1..].copy_from_slice(&hash[..]);
+                base58::check_encode_slice_to_fmt(fmt, &prefixed[..])
+            }
+            Payload::ScriptHash(ref hash) => {
+                let mut prefixed = [0; 21];
+                prefixed[0] = match self.network {
+                    Network::Bitcoin => self.version_scripthash_mainnet,
+                    Network::Testnet | Network::Signet | Network::Regtest => self.version_scripthash_testnet,
+                };
+                prefixed[1..].copy_from_slice(&hash[..]);
+                base58::check_encode_slice_to_fmt(fmt, &prefixed[..])
+            }
+            Payload::WitnessProgram {
+                version: ver,
+                program: ref prog,
+            } => {
+                let hrp = match self.network {
+                    Network::Bitcoin => self.prefix_bech32_mainnet.as_str(),
+                    Network::Testnet | Network::Signet  => self.prefix_bech32_testnet.as_str(),
+                    Network::Regtest => "bcrt",
+                };
+                let mut bech32_writer = bech32::Bech32Writer::new(hrp, fmt)?;
+                bech32::WriteBase32::write_u5(&mut bech32_writer, ver)?;
+                bech32::ToBase32::write_base32(&prog, &mut bech32_writer)
+            }
+        }
+    }
+}
+
+/// Extract the bech32 prefix.
+/// Returns the same slice when no prefix is found.
+fn find_bech32_prefix(bech32: &str) -> &str {
+    // Split at the last occurrence of the separator character '1'.
+    match bech32.rfind('1') {
+        None => bech32,
+        Some(sep) => bech32.split_at(sep).0,
     }
 }
 

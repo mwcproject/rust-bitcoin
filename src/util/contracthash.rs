@@ -200,12 +200,14 @@ pub fn create_address(secp: &Secp256k1,
                       -> Result<address::Address, Error> {
     let keys = tweak_keys(secp, keys, contract);
     let script = template.to_script(&keys)?;
-    Ok(address::Address {
-        network: network,
-        payload: address::Payload::ScriptHash(
-            ScriptHash::hash(&script[..])
-        )
-    })
+
+    let mut address = address::Address::new_btc();
+    address.network = network;
+    address.payload = address::Payload::ScriptHash(
+        ScriptHash::hash(&script[..])
+    );
+
+    Ok(address)
 }
 
 /// Extract the keys and template from a completed script
