@@ -55,7 +55,7 @@ fn main() {
     let public_key = xpub.derive_pub(&secp, &vec![zero, zero])
                          .unwrap()
                          .public_key;
-    let address = Address::p2wpkh(&public_key, network).unwrap();
+    let address = Address::new_btc().p2wpkh(&public_key, network).unwrap();
     println!("First receiving address: {}", address);
 
 }

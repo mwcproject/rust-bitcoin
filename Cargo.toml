@@ -33,6 +33,3 @@ serde_test = "1"
 git = "https://github.com/mwcproject/rust-secp256k1-zkp"
 version = "0.7.7"
 features = ["bullet-proof-sizing"]
-
-# We need to pin ryu (transitive dep from serde_json) to stay compatible with Rust 1.22.0
-ryu = "<1.0.5"

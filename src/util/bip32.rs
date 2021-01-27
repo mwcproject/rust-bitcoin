@@ -789,7 +789,7 @@ mod tests {
     use std::str::FromStr;
     use std::string::ToString;
 
-    use secp256k1::{self, Secp256k1};
+    use secp256k1::Secp256k1;
     use hashes::hex::FromHex;
 
     use network::constants::Network::{self, Bitcoin};
