@@ -10,6 +10,9 @@ description = "General purpose library for using and interoperating with Bitcoin
 keywords = [ "crypto", "bitcoin" ]
 readme = "README.md"
 
+[lib]
+name = "bitcoin"
+path = "src/lib.rs"
 
 [features]
 base64 = [ "base64-compat" ]
