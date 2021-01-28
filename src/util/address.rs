@@ -287,6 +287,34 @@ impl Address {
         }
     }
 
+    /// Create empty address to LTC syntax
+    pub fn new_dash() -> Address {
+        Address {
+            network: Network::Signet, // we don't don't support it, it is invalid value for MWC swaps
+            payload: Payload::ScriptHash( ScriptHash::default() ),
+            prefix_bech32_mainnet: "xxx".to_string(), // Dash doesn't support the segwit
+            prefix_bech32_testnet: "xxx".to_string(),
+            version_pubkeyhash_mainnet: 76,
+            version_scripthash_mainnet: 16,
+            version_pubkeyhash_testnet: 140,
+            version_scripthash_testnet: 19,
+        }
+    }
+
+    /// Convert address to LTC syntax
+    pub fn to_dash(self) -> Address {
+        Address {
+            network: self.network, // we don't don't support it, it is invalid value for MWC swaps
+            payload: self.payload,
+            prefix_bech32_mainnet: "xxx".to_string(), // Dash doesn't support the segwit
+            prefix_bech32_testnet: "xxx".to_string(),
+            version_pubkeyhash_mainnet: 76,
+            version_scripthash_mainnet: 16,
+            version_pubkeyhash_testnet: 140,
+            version_scripthash_testnet: 19,
+        }
+    }
+
     /// Creates a pay to (compressed) public key hash address from a public key
     /// This is the preferred non-witness type address
     #[inline]
