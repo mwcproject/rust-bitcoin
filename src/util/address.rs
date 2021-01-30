@@ -220,13 +220,13 @@ pub struct Address {
     /// Bech32 testnet prefix
     pub prefix_bech32_testnet: String,
     /// Checksum: Mainnet Pubkey Hash address
-    pub version_pubkeyhash_mainnet: u8,
+    pub version_pubkeyhash_mainnet: Vec<u8>,
     /// Checksum: Testnet Pubkey Hash address
-    pub version_pubkeyhash_testnet: u8,
+    pub version_pubkeyhash_testnet: Vec<u8>,
     /// Checksum: Mainnet Script Hash address
-    pub version_scripthash_mainnet: u8,
+    pub version_scripthash_mainnet: Vec<u8>,
     /// Checksum: Testnet Script Hash address
-    pub version_scripthash_testnet: u8,
+    pub version_scripthash_testnet: Vec<u8>,
 }
 serde_string_impl!(Address, "a Bitcoin address");
 
@@ -238,10 +238,10 @@ impl Address {
             payload: Payload::ScriptHash( ScriptHash::default() ),
             prefix_bech32_mainnet: "bc".to_string(),
             prefix_bech32_testnet: "tb".to_string(),
-            version_pubkeyhash_mainnet: 0,
-            version_scripthash_mainnet: 5,
-            version_pubkeyhash_testnet: 111,
-            version_scripthash_testnet: 196,
+            version_pubkeyhash_mainnet: vec![0],
+            version_scripthash_mainnet: vec![5],
+            version_pubkeyhash_testnet: vec![111],
+            version_scripthash_testnet: vec![196],
         }
     }
 
@@ -252,10 +252,10 @@ impl Address {
             payload: self.payload,
             prefix_bech32_mainnet: "bc".to_string(),
             prefix_bech32_testnet: "tb".to_string(),
-            version_pubkeyhash_mainnet: 0,
-            version_scripthash_mainnet: 5,
-            version_pubkeyhash_testnet: 111,
-            version_scripthash_testnet: 196,
+            version_pubkeyhash_mainnet: vec![0],
+            version_scripthash_mainnet: vec![5],
+            version_pubkeyhash_testnet: vec![111],
+            version_scripthash_testnet: vec![196],
         }
     }
 
@@ -266,10 +266,10 @@ impl Address {
             payload: Payload::ScriptHash( ScriptHash::default() ),
             prefix_bech32_mainnet: "ltc".to_string(),
             prefix_bech32_testnet: "tltc".to_string(),
-            version_pubkeyhash_mainnet: 48,
-            version_scripthash_mainnet: 50,
-            version_pubkeyhash_testnet: 111,
-            version_scripthash_testnet: 58,
+            version_pubkeyhash_mainnet: vec![48],
+            version_scripthash_mainnet: vec![50],
+            version_pubkeyhash_testnet: vec![111],
+            version_scripthash_testnet: vec![58],
         }
     }
 
@@ -280,10 +280,10 @@ impl Address {
             payload: self.payload,
             prefix_bech32_mainnet: "ltc".to_string(),
             prefix_bech32_testnet: "tltc".to_string(),
-            version_pubkeyhash_mainnet: 48,
-            version_scripthash_mainnet: 50,
-            version_pubkeyhash_testnet: 111,
-            version_scripthash_testnet: 58,
+            version_pubkeyhash_mainnet: vec![48],
+            version_scripthash_mainnet: vec![50],
+            version_pubkeyhash_testnet: vec![111],
+            version_scripthash_testnet: vec![58],
         }
     }
 
@@ -294,10 +294,10 @@ impl Address {
             payload: Payload::ScriptHash( ScriptHash::default() ),
             prefix_bech32_mainnet: "xxx".to_string(), // Dash doesn't support the segwit
             prefix_bech32_testnet: "xxx".to_string(),
-            version_pubkeyhash_mainnet: 76,
-            version_scripthash_mainnet: 16,
-            version_pubkeyhash_testnet: 140,
-            version_scripthash_testnet: 19,
+            version_pubkeyhash_mainnet: vec![76],
+            version_scripthash_mainnet: vec![16],
+            version_pubkeyhash_testnet: vec![140],
+            version_scripthash_testnet: vec![19],
         }
     }
 
@@ -308,10 +308,67 @@ impl Address {
             payload: self.payload,
             prefix_bech32_mainnet: "xxx".to_string(), // Dash doesn't support the segwit
             prefix_bech32_testnet: "xxx".to_string(),
-            version_pubkeyhash_mainnet: 76,
-            version_scripthash_mainnet: 16,
-            version_pubkeyhash_testnet: 140,
-            version_scripthash_testnet: 19,
+            version_pubkeyhash_mainnet: vec![76],
+            version_scripthash_mainnet: vec![16],
+            version_pubkeyhash_testnet: vec![140],
+            version_scripthash_testnet: vec![19],
+        }
+    }
+
+    // https://zips.z.cash/protocol/protocol.pdf
+    /// Create empty address to ZCash syntax
+    pub fn new_zec() -> Address {
+        Address {
+            network: Network::Signet, // we don't don't support it, it is invalid value for MWC swaps
+            payload: Payload::ScriptHash( ScriptHash::default() ),
+            prefix_bech32_mainnet: "xxx".to_string(), // Dash doesn't support the segwit
+            prefix_bech32_testnet: "xxx".to_string(),
+            version_pubkeyhash_mainnet: vec![28,184],
+            version_scripthash_mainnet: vec![28,189],
+            version_pubkeyhash_testnet: vec![29,37],
+            version_scripthash_testnet: vec![28,186],
+        }
+    }
+
+    /// Convert address to ZCash syntax
+    pub fn to_zec(self) -> Address {
+        Address {
+            network: self.network, // we don't don't support it, it is invalid value for MWC swaps
+            payload: self.payload,
+            prefix_bech32_mainnet: "xxx".to_string(), // Dash doesn't support the segwit
+            prefix_bech32_testnet: "xxx".to_string(),
+            version_pubkeyhash_mainnet: vec![28,184],
+            version_scripthash_mainnet: vec![28,189],
+            version_pubkeyhash_testnet: vec![29,37],
+            version_scripthash_testnet: vec![28,186],
+        }
+    }
+
+    /// Create empty address to Dogecoin syntax
+    pub fn new_doge() -> Address {
+        Address {
+            network: Network::Signet, // we don't don't support it, it is invalid value for MWC swaps
+            payload: Payload::ScriptHash( ScriptHash::default() ),
+            prefix_bech32_mainnet: "xxx".to_string(), // Dash doesn't support the segwit
+            prefix_bech32_testnet: "xxx".to_string(),
+            version_pubkeyhash_mainnet: vec![30],
+            version_scripthash_mainnet: vec![22],
+            version_pubkeyhash_testnet: vec![113],
+            version_scripthash_testnet: vec![196],
+        }
+    }
+
+    /// Convert address to Dogecoin syntax
+    pub fn to_doge(self) -> Address {
+        Address {
+            network: self.network, // we don't don't support it, it is invalid value for MWC swaps
+            payload: self.payload,
+            prefix_bech32_mainnet: "xxx".to_string(), // Dash doesn't support the segwit
+            prefix_bech32_testnet: "xxx".to_string(),
+            version_pubkeyhash_mainnet: vec![30],
+            version_scripthash_mainnet: vec![22],
+            version_pubkeyhash_testnet: vec![113],
+            version_scripthash_testnet: vec![196],
         }
     }
 
@@ -551,34 +608,35 @@ impl Address {
             return Err(Error::Base58(base58::Error::InvalidLength(s.len() * 11 / 15)));
         }
         let data = base58::from_check(s)?;
-        if data.len() != 21 {
+        let prefix_len = self.version_pubkeyhash_mainnet.len(); // All prefixes has the same length (1 or 2)
+        if data.len() != 20+prefix_len {
             return Err(Error::Base58(base58::Error::InvalidLength(data.len())));
         }
 
-        let version = data[0];
+        let version = data[0..prefix_len].to_vec();
         let (network, payload) = if version == self.version_pubkeyhash_mainnet {
             (
                 Network::Bitcoin,
-                Payload::PubkeyHash(PubkeyHash::from_slice(&data[1..]).unwrap()),
+                Payload::PubkeyHash(PubkeyHash::from_slice(&data[prefix_len..]).unwrap()),
             )
         } else if version == self.version_scripthash_mainnet {
             (
                 Network::Bitcoin,
-                Payload::ScriptHash(ScriptHash::from_slice(&data[1..]).unwrap()),
+                Payload::ScriptHash(ScriptHash::from_slice(&data[prefix_len..]).unwrap()),
             )
         } else if version == self.version_pubkeyhash_testnet {
             (
                 Network::Testnet,
-                Payload::PubkeyHash(PubkeyHash::from_slice(&data[1..]).unwrap()),
+                Payload::PubkeyHash(PubkeyHash::from_slice(&data[prefix_len..]).unwrap()),
             )
         } else if version == self.version_scripthash_testnet {
             (
                 Network::Testnet,
-                Payload::ScriptHash(ScriptHash::from_slice(&data[1..]).unwrap()),
+                Payload::ScriptHash(ScriptHash::from_slice(&data[prefix_len..]).unwrap()),
             )
         }
         else {
-            return Err(Error::Base58(base58::Error::InvalidVersion(vec![version])));
+            return Err(Error::Base58(base58::Error::InvalidVersion(version)));
         };
 
         Ok(Address {
@@ -598,22 +656,20 @@ impl Display for Address {
     fn fmt(&self, fmt: &mut Formatter) -> fmt::Result {
         match self.payload {
             Payload::PubkeyHash(ref hash) => {
-                let mut prefixed = [0; 21];
-                prefixed[0] = match self.network {
-                    Network::Bitcoin => self.version_pubkeyhash_mainnet,
-                    Network::Testnet | Network::Signet | Network::Regtest => self.version_pubkeyhash_testnet,
+                let mut prefixed = match self.network {
+                    Network::Bitcoin => self.version_pubkeyhash_mainnet.clone(),
+                    Network::Testnet | Network::Signet | Network::Regtest => self.version_pubkeyhash_testnet.clone(),
                 };
-                prefixed[1..].copy_from_slice(&hash[..]);
-                base58::check_encode_slice_to_fmt(fmt, &prefixed[..])
+                prefixed.append( &mut hash[..].to_vec() );
+                base58::check_encode_slice_to_fmt(fmt, &prefixed)
             }
             Payload::ScriptHash(ref hash) => {
-                let mut prefixed = [0; 21];
-                prefixed[0] = match self.network {
-                    Network::Bitcoin => self.version_scripthash_mainnet,
-                    Network::Testnet | Network::Signet | Network::Regtest => self.version_scripthash_testnet,
+                let mut prefixed = match self.network {
+                    Network::Bitcoin => self.version_scripthash_mainnet.clone(),
+                    Network::Testnet | Network::Signet | Network::Regtest => self.version_scripthash_testnet.clone(),
                 };
-                prefixed[1..].copy_from_slice(&hash[..]);
-                base58::check_encode_slice_to_fmt(fmt, &prefixed[..])
+                prefixed.append( &mut hash[..].to_vec() );
+                base58::check_encode_slice_to_fmt(fmt, &prefixed)
             }
             Payload::WitnessProgram {
                 version: ver,
