@@ -23,7 +23,7 @@ use std::str::FromStr;
 
 use hash_types::XpubIdentifier;
 use hashes::{sha512, Hash, HashEngine, Hmac, HmacEngine};
-use secp256k1::{self, Secp256k1};
+use secp256k1::{self, ContextFlag, Secp256k1};
 
 use network::constants::Network;
 use util::{base58, endian};
@@ -488,7 +488,7 @@ impl From<base58::Error> for Error {
 
 impl ExtendedPrivKey {
     /// Construct a new master key from a seed value
-    pub fn new_master(network: Network, seed: &[u8]) -> Result<ExtendedPrivKey, Error> {
+    pub fn new_master(secp: &Secp256k1, network: Network, seed: &[u8]) -> Result<ExtendedPrivKey, Error> {
         let mut hmac_engine: HmacEngine<sha512::Hash> = HmacEngine::new(b"Bitcoin seed");
         hmac_engine.input(seed);
         let hmac_result: Hmac<sha512::Hash> = Hmac::from_engine(hmac_engine);
@@ -501,7 +501,7 @@ impl ExtendedPrivKey {
             private_key: PrivateKey {
                 compressed: true,
                 network: network,
-                key: secp256k1::SecretKey::from_slice(
+                key: secp256k1::SecretKey::from_slice( secp,
                     &hmac_result[..32]
                 ).map_err(Error::Ecdsa)?,
             },
@@ -530,7 +530,7 @@ impl ExtendedPrivKey {
         match i {
             ChildNumber::Normal { .. } => {
                 // Non-hardened key: compute public data and use that
-                hmac_engine.input(&PublicKey::from_private_key(secp, &self.private_key).key.serialize_vec(true)[..]);
+                hmac_engine.input(&PublicKey::from_private_key(secp, &self.private_key).key.serialize_vec(secp, true)[..]);
             }
             ChildNumber::Hardened { .. } => {
                 // Hardened key: use only secret data to prevent public derivation
@@ -544,9 +544,9 @@ impl ExtendedPrivKey {
         let mut sk = PrivateKey {
             compressed: true,
             network: self.network,
-            key: secp256k1::SecretKey::from_slice(&hmac_result[..32]).map_err(Error::Ecdsa)?,
+            key: secp256k1::SecretKey::from_slice(secp, &hmac_result[..32]).map_err(Error::Ecdsa)?,
         };
-        sk.key.add_assign(&self.private_key.key).map_err(Error::Ecdsa)?;
+        sk.key.add_assign(secp, &self.private_key.key).map_err(Error::Ecdsa)?;
 
         Ok(ExtendedPrivKey {
             network: self.network,
@@ -559,7 +559,7 @@ impl ExtendedPrivKey {
     }
 
     /// Decoding extended private key from binary data according to BIP 32
-    pub fn decode(data: &[u8]) -> Result<ExtendedPrivKey, Error> {
+    pub fn decode(secp: &Secp256k1, data: &[u8]) -> Result<ExtendedPrivKey, Error> {
         if data.len() != 78 {
             return Err(Error::WrongExtendedKeyLength(data.len()))
         }
@@ -583,7 +583,7 @@ impl ExtendedPrivKey {
             private_key: PrivateKey {
                 compressed: true,
                 network: network,
-                key: secp256k1::SecretKey::from_slice(
+                key: secp256k1::SecretKey::from_slice( secp,
                     &data[46..78]
                 ).map_err(Error::Ecdsa)?,
             },
@@ -608,7 +608,7 @@ impl ExtendedPrivKey {
 
     /// Returns the HASH160 of the public key belonging to the xpriv
     pub fn identifier(&self, secp: &Secp256k1) -> XpubIdentifier {
-        ExtendedPubKey::from_private(secp, self).identifier()
+        ExtendedPubKey::from_private(secp, self).identifier(secp)
     }
 
     /// Returns the first four bytes of the identifier
@@ -646,14 +646,14 @@ impl ExtendedPubKey {
     }
 
     /// Compute the scalar tweak added to this key to get a child key
-    pub fn ckd_pub_tweak(&self, i: ChildNumber) -> Result<(PrivateKey, ChainCode), Error> {
+    pub fn ckd_pub_tweak(&self, secp: &Secp256k1, i: ChildNumber) -> Result<(PrivateKey, ChainCode), Error> {
         match i {
             ChildNumber::Hardened { .. } => {
                 Err(Error::CannotDeriveFromHardenedKey)
             }
             ChildNumber::Normal { index: n } => {
                 let mut hmac_engine: HmacEngine<sha512::Hash> = HmacEngine::new(&self.chain_code[..]);
-                hmac_engine.input(&self.public_key.key.serialize_vec(true));
+                hmac_engine.input(&self.public_key.key.serialize_vec(secp, true));
                 hmac_engine.input(&endian::u32_to_array_be(n));
 
                 let hmac_result: Hmac<sha512::Hash> = Hmac::from_engine(hmac_engine);
@@ -661,7 +661,7 @@ impl ExtendedPubKey {
                 let private_key = PrivateKey {
                     compressed: true,
                     network: self.network,
-                    key: secp256k1::SecretKey::from_slice(&hmac_result[..32])?,
+                    key: secp256k1::SecretKey::from_slice(secp, &hmac_result[..32])?,
                 };
                 let chain_code = ChainCode::from(&hmac_result[32..]);
                 Ok((private_key, chain_code))
@@ -675,14 +675,14 @@ impl ExtendedPubKey {
         secp: &Secp256k1,
         i: ChildNumber,
     ) -> Result<ExtendedPubKey, Error> {
-        let (sk, chain_code) = self.ckd_pub_tweak(i)?;
+        let (sk, chain_code) = self.ckd_pub_tweak(secp, i)?;
         let mut pk = self.public_key.clone();
         pk.key.add_exp_assign(secp, &sk.key).map_err(Error::Ecdsa)?;
 
         Ok(ExtendedPubKey {
             network: self.network,
             depth: self.depth + 1,
-            parent_fingerprint: self.fingerprint(),
+            parent_fingerprint: self.fingerprint(secp),
             child_number: i,
             public_key: pk,
             chain_code: chain_code
@@ -690,7 +690,7 @@ impl ExtendedPubKey {
     }
 
     /// Decoding extended public key from binary data according to BIP 32
-    pub fn decode(data: &[u8]) -> Result<ExtendedPubKey, Error> {
+    pub fn decode(secp: &Secp256k1, data: &[u8]) -> Result<ExtendedPubKey, Error> {
         if data.len() != 78 {
             return Err(Error::WrongExtendedKeyLength(data.len()))
         }
@@ -709,12 +709,12 @@ impl ExtendedPubKey {
             parent_fingerprint: Fingerprint::from(&data[5..9]),
             child_number: endian::slice_to_u32_be(&data[9..13]).into(),
             chain_code: ChainCode::from(&data[13..45]),
-            public_key: PublicKey::from_slice(&data[45..78])?,
+            public_key: PublicKey::from_slice(secp, &data[45..78])?,
         })
     }
 
     /// Extended public key binary encoding according to BIP 32
-    pub fn encode(&self) -> [u8; 78] {
+    pub fn encode(&self, secp: &Secp256k1) -> [u8; 78] {
         let mut ret = [0; 78];
         ret[0..4].copy_from_slice(&match self.network {
             Network::Bitcoin => [0x04u8, 0x88, 0xB2, 0x1E],
@@ -724,20 +724,20 @@ impl ExtendedPubKey {
         ret[5..9].copy_from_slice(&self.parent_fingerprint[..]);
         ret[9..13].copy_from_slice(&endian::u32_to_array_be(u32::from(self.child_number)));
         ret[13..45].copy_from_slice(&self.chain_code[..]);
-        ret[45..78].copy_from_slice(&self.public_key.key.serialize_vec(true));
+        ret[45..78].copy_from_slice(&self.public_key.key.serialize_vec(secp, true));
         ret
     }
 
     /// Returns the HASH160 of the chaincode
-    pub fn identifier(&self) -> XpubIdentifier {
+    pub fn identifier(&self, secp: &Secp256k1) -> XpubIdentifier {
         let mut engine = XpubIdentifier::engine();
-        self.public_key.write_into(&mut engine).expect("engines don't error");
+        self.public_key.write_into(secp, &mut engine).expect("engines don't error");
         XpubIdentifier::from_engine(engine)
     }
 
     /// Returns the first four bytes of the identifier
-    pub fn fingerprint(&self) -> Fingerprint {
-        Fingerprint::from(&self.identifier()[0..4])
+    pub fn fingerprint(&self, secp: &Secp256k1) -> Fingerprint {
+        Fingerprint::from(&self.identifier(secp)[0..4])
     }
 }
 
@@ -757,13 +757,15 @@ impl FromStr for ExtendedPrivKey {
             return Err(base58::Error::InvalidLength(data.len()).into());
         }
 
-        Ok(ExtendedPrivKey::decode(&data[..])?)
+        let secp = Secp256k1::with_caps(ContextFlag::None);
+        Ok(ExtendedPrivKey::decode(&secp, &data[..])?)
     }
 }
 
 impl fmt::Display for ExtendedPubKey {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        base58::check_encode_slice_to_fmt(fmt, &self.encode()[..])
+        let secp = Secp256k1::with_caps(ContextFlag::None);
+        base58::check_encode_slice_to_fmt(fmt, &self.encode(&secp)[..])
     }
 }
 
@@ -776,8 +778,8 @@ impl FromStr for ExtendedPubKey {
         if data.len() != 78 {
             return Err(base58::Error::InvalidLength(data.len()).into());
         }
-
-        Ok(ExtendedPubKey::decode(&data[..])?)
+        let secp = Secp256k1::with_caps(ContextFlag::None);
+        Ok(ExtendedPubKey::decode(&secp, &data[..])?)
     }
 }
 
@@ -865,7 +867,7 @@ mod tests {
                  expected_sk: &str,
                  expected_pk: &str) {
 
-        let mut sk = ExtendedPrivKey::new_master(network, seed).unwrap();
+        let mut sk = ExtendedPrivKey::new_master(secp, network, seed).unwrap();
         let mut pk = ExtendedPubKey::from_private(secp, &sk);
 
         // Check derivation convenience method for ExtendedPrivKey

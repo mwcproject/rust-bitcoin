@@ -276,13 +276,15 @@ mod tests {
     use util::address::Address;
     use util::key::PublicKey;
     use hashes::hex::FromHex;
+    use secp256k1::{ContextFlag, Secp256k1};
 
     use super::*;
 
     fn p2pkh_hex(pk: &str) -> Script {
         let pk = Vec::from_hex(pk).unwrap();
-        let pk = PublicKey::from_slice(pk.as_slice()).unwrap();
-        let witness_script = Address::new_btc().p2pkh(&pk, Network::Bitcoin).script_pubkey();
+        let secp = Secp256k1::with_caps(ContextFlag::None);
+        let pk = PublicKey::from_slice(&secp, pk.as_slice()).unwrap();
+        let witness_script = Address::new_btc().p2pkh(&secp, &pk, Network::Bitcoin).script_pubkey();
         witness_script
     }
 

@@ -16,6 +16,7 @@ use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 use std::io::{self, Cursor, Read};
 use std::cmp;
+use secp256k1::{ContextFlag, Secp256k1};
 
 use blockdata::transaction::Transaction;
 use consensus::{encode, Encodable, Decodable};
@@ -120,11 +121,13 @@ impl Map for Global {
             },
         });
 
+        let secp = Secp256k1::with_caps(ContextFlag::None);
+
         for (xpub, (fingerprint, derivation)) in &self.xpub {
             rv.push(raw::Pair {
                 key: raw::Key {
                     type_value: PSBT_GLOBAL_XPUB,
-                    key: xpub.encode().to_vec(),
+                    key: xpub.encode(&secp).to_vec(),
                 },
                 value: {
                     let mut ret = Vec::with_capacity(4 + derivation.len() * 4);
@@ -236,6 +239,8 @@ impl Decodable for Global {
         let mut xpub_map: BTreeMap<ExtendedPubKey, (Fingerprint, DerivationPath)> = Default::default();
         let mut proprietary: BTreeMap<raw::ProprietaryKey, Vec<u8>> = Default::default();
 
+        let secp = Secp256k1::with_caps(ContextFlag::None);
+
         loop {
             match raw::Pair::consensus_decode(&mut d) {
                 Ok(pair) => {
@@ -270,7 +275,7 @@ impl Decodable for Global {
                         }
                         PSBT_GLOBAL_XPUB => {
                             if !pair.key.key.is_empty() {
-                                let xpub = ExtendedPubKey::decode(&pair.key.key)
+                                let xpub = ExtendedPubKey::decode(&secp, &pair.key.key)
                                     .map_err(|_| encode::Error::ParseFailed(
                                         "Can't deserialize ExtendedPublicKey from global XPUB key data"
                                     ))?;

@@ -94,7 +94,7 @@ pub struct Template(Vec<TemplateElement>);
 
 impl Template {
     /// Instantiate a template
-    pub fn to_script(&self, keys: &[PublicKey]) -> Result<script::Script, Error> {
+    pub fn to_script(&self, secp: &Secp256k1, keys: &[PublicKey]) -> Result<script::Script, Error> {
         let mut key_index = 0;
         let mut ret = script::Builder::new();
         for elem in &self.0 {
@@ -105,7 +105,7 @@ impl Template {
                         return Err(Error::TooFewKeys(key_index));
                     }
                     key_index += 1;
-                    ret.push_key(&keys[key_index - 1])
+                    ret.push_key(secp, &keys[key_index - 1])
                 }
             }
         }
@@ -153,9 +153,9 @@ impl<'a> From<&'a [u8]> for Template {
 
 /// Tweak a single key using some arbitrary data
 pub fn tweak_key(secp: &Secp256k1, mut key: PublicKey, contract: &[u8]) -> PublicKey {
-    let hmac_result = compute_tweak(&key, contract);
+    let hmac_result = compute_tweak(secp, &key, contract);
     key.key.add_exp_assign(
-        secp, &SecretKey::from_slice(&hmac_result[..]).expect("HMAC cannot produce invalid tweak")
+        secp, &SecretKey::from_slice(secp, &hmac_result[..]).expect("HMAC cannot produce invalid tweak")
     ).expect("HMAC cannot produce invalid tweak");
     key
 }
@@ -166,11 +166,11 @@ pub fn tweak_keys(secp: &Secp256k1, keys: &[PublicKey], contract: &[u8]) -> Vec<
 }
 
 /// Compute a tweak from some given data for the given public key
-pub fn compute_tweak( pk: &PublicKey, contract: &[u8]) -> Hmac<sha256::Hash> {
+pub fn compute_tweak(secp: &Secp256k1, pk: &PublicKey, contract: &[u8]) -> Hmac<sha256::Hash> {
     let mut hmac_engine: HmacEngine<sha256::Hash> = if pk.compressed {
-        HmacEngine::new(&pk.key.serialize_vec(true)[..])
+        HmacEngine::new(&pk.key.serialize_vec(secp, true)[..])
     } else {
-        HmacEngine::new(&pk.key.serialize_vec(false)[..])
+        HmacEngine::new(&pk.key.serialize_vec(secp, false)[..])
     };
     hmac_engine.input(contract);
     Hmac::from_engine(hmac_engine)
@@ -181,11 +181,11 @@ pub fn tweak_secret_key(secp: &Secp256k1, key: &PrivateKey, contract: &[u8]) -> 
     // Compute public key
     let pk = PublicKey::from_private_key(secp, &key);
     // Compute tweak
-    let hmac_sk = compute_tweak(&pk, contract);
+    let hmac_sk = compute_tweak(secp, &pk, contract);
     // Execute the tweak
     let mut key = key.clone();
-    key.key.add_assign(
-        &SecretKey::from_slice(&hmac_sk[..]).map_err(Error::Secp)?
+    key.key.add_assign(secp,
+        &SecretKey::from_slice(secp, &hmac_sk[..]).map_err(Error::Secp)?
     ).map_err(Error::Secp)?;
     // Return
     Ok(key)
@@ -199,7 +199,7 @@ pub fn create_address(secp: &Secp256k1,
                       template: &Template)
                       -> Result<address::Address, Error> {
     let keys = tweak_keys(secp, keys, contract);
-    let script = template.to_script(&keys)?;
+    let script = template.to_script(secp, &keys)?;
 
     let mut address = address::Address::new_btc();
     address.network = network;
@@ -211,7 +211,7 @@ pub fn create_address(secp: &Secp256k1,
 }
 
 /// Extract the keys and template from a completed script
-pub fn untemplate(script: &script::Script) -> Result<(Template, Vec<PublicKey>), Error> {
+pub fn untemplate(secp: &Secp256k1, script: &script::Script) -> Result<(Template, Vec<PublicKey>), Error> {
     let mut ret = script::Builder::new();
     let mut retkeys = vec![];
 
@@ -230,7 +230,7 @@ pub fn untemplate(script: &script::Script) -> Result<(Template, Vec<PublicKey>),
         match instruction.unwrap() {
             script::Instruction::PushBytes(data) => {
                 let n = data.len();
-                ret = match PublicKey::from_slice(data) {
+                ret = match PublicKey::from_slice(secp, data) {
                     Ok(key) => {
                         if n == 65 { return Err(Error::UncompressedKey); }
                         if mode == Mode::SeekingCheckMulti { return Err(Error::ExpectedChecksig); }
@@ -293,22 +293,22 @@ mod tests {
     use PublicKey;
 
     macro_rules! hex (($hex:expr) => (Vec::from_hex($hex).unwrap()));
-    macro_rules! hex_key (($hex:expr) => (PublicKey::from_slice(&hex!($hex)).unwrap()));
+    macro_rules! hex_key (($secp:expr, $hex:expr) => (PublicKey::from_slice($secp, &hex!($hex)).unwrap()));
     macro_rules! alpha_template(() => (Template::from(&hex!("55fefefefefefefe57AE")[..])));
-    macro_rules! alpha_keys(() => (
-        &[hex_key!("0269992fb441ae56968e5b77d46a3e53b69f136444ae65a94041fc937bdb28d933"),
-          hex_key!("021df31471281d4478df85bfce08a10aab82601dca949a79950f8ddf7002bd915a"),
-          hex_key!("02174c82021492c2c6dfcbfa4187d10d38bed06afb7fdcd72c880179fddd641ea1"),
-          hex_key!("033f96e43d72c33327b6a4631ccaa6ea07f0b106c88b9dc71c9000bb6044d5e88a"),
-          hex_key!("0313d8748790f2a86fb524579b46ce3c68fedd58d2a738716249a9f7d5458a15c2"),
-          hex_key!("030b632eeb079eb83648886122a04c7bf6d98ab5dfb94cf353ee3e9382a4c2fab0"),
-          hex_key!("02fb54a7fcaa73c307cfd70f3fa66a2e4247a71858ca731396343ad30c7c4009ce")]
+    macro_rules! alpha_keys(($secp:expr) => (
+        &[hex_key!($secp, "0269992fb441ae56968e5b77d46a3e53b69f136444ae65a94041fc937bdb28d933"),
+          hex_key!($secp, "021df31471281d4478df85bfce08a10aab82601dca949a79950f8ddf7002bd915a"),
+          hex_key!($secp, "02174c82021492c2c6dfcbfa4187d10d38bed06afb7fdcd72c880179fddd641ea1"),
+          hex_key!($secp, "033f96e43d72c33327b6a4631ccaa6ea07f0b106c88b9dc71c9000bb6044d5e88a"),
+          hex_key!($secp, "0313d8748790f2a86fb524579b46ce3c68fedd58d2a738716249a9f7d5458a15c2"),
+          hex_key!($secp, "030b632eeb079eb83648886122a04c7bf6d98ab5dfb94cf353ee3e9382a4c2fab0"),
+          hex_key!($secp, "02fb54a7fcaa73c307cfd70f3fa66a2e4247a71858ca731396343ad30c7c4009ce")]
     ));
 
     #[test]
     fn sanity() {
         let secp = Secp256k1::new();
-        let keys = alpha_keys!();
+        let keys = alpha_keys!(&secp);
         // This is the first withdraw ever, in alpha a94f95cc47b444c10449c0eed51d895e4970560c4a1a9d15d46124858abc3afe
         let contract = hex!("5032534894ffbf32c1f1c0d3089b27c98fd991d5d7329ebd7d711223e2cde5a9417a1fa3e852c576");
 
@@ -318,11 +318,12 @@ mod tests {
 
     #[test]
     fn script() {
-        let alpha_keys = alpha_keys!();
+        let secp = Secp256k1::new();
+        let alpha_keys = alpha_keys!(&secp);
         let alpha_template = alpha_template!();
 
         let alpha_redeem = Script::from(hex!("55210269992fb441ae56968e5b77d46a3e53b69f136444ae65a94041fc937bdb28d93321021df31471281d4478df85bfce08a10aab82601dca949a79950f8ddf7002bd915a2102174c82021492c2c6dfcbfa4187d10d38bed06afb7fdcd72c880179fddd641ea121033f96e43d72c33327b6a4631ccaa6ea07f0b106c88b9dc71c9000bb6044d5e88a210313d8748790f2a86fb524579b46ce3c68fedd58d2a738716249a9f7d5458a15c221030b632eeb079eb83648886122a04c7bf6d98ab5dfb94cf353ee3e9382a4c2fab02102fb54a7fcaa73c307cfd70f3fa66a2e4247a71858ca731396343ad30c7c4009ce57ae"));
-        let (template, keys) = untemplate(&alpha_redeem).unwrap();
+        let (template, keys) = untemplate(&secp, &alpha_redeem).unwrap();
 
         assert_eq!(keys, alpha_keys);
         assert_eq!(template, alpha_template);
@@ -394,7 +395,8 @@ mod tests {
 
     #[test]
     fn bad_key_number() {
-        let alpha_keys = alpha_keys!();
+        let secp = Secp256k1::new();
+        let alpha_keys = alpha_keys!(&secp);
         let template_short = Template::from(&hex!("55fefefefefefe57AE")[..]);
         let template_long = Template::from(&hex!("55fefefefefefefefe57AE")[..]);
         let template = Template::from(&hex!("55fefefefefefefe57AE")[..]);
@@ -402,9 +404,9 @@ mod tests {
         assert_eq!(template_short.required_keys(), 6);
         assert_eq!(template_long.required_keys(), 8);
         assert_eq!(template.required_keys(), 7);
-        assert_eq!(template_short.to_script(alpha_keys), Err(Error::TooManyKeys(7)));
-        assert_eq!(template_long.to_script(alpha_keys), Err(Error::TooFewKeys(7)));
-        assert!(template.to_script(alpha_keys).is_ok());
+        assert_eq!(template_short.to_script(&secp, alpha_keys), Err(Error::TooManyKeys(7)));
+        assert_eq!(template_long.to_script(&secp, alpha_keys), Err(Error::TooFewKeys(7)));
+        assert!(template.to_script(&secp, alpha_keys).is_ok());
     }
 }
 

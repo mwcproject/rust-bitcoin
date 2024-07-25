@@ -26,7 +26,9 @@ fn main() {
         process::exit(1);
     }
 
-    let wif = PrivateKey::from_wif(&args[1]).unwrap();
+    let secp = Secp256k1::new();
+
+    let wif = PrivateKey::from_wif(&secp, &args[1]).unwrap();
     println!("Seed WIF: {}", wif);
 
     // use the network from WIF key
@@ -39,7 +41,7 @@ fn main() {
     let secp = Secp256k1::new();
 
     // calculate root key from seed
-    let root = ExtendedPrivKey::new_master(network, &seed).unwrap();
+    let root = ExtendedPrivKey::new_master(&secp, network, &seed).unwrap();
     println!("Root key: {}", root);
 
     // derive child xpub
@@ -55,7 +57,7 @@ fn main() {
     let public_key = xpub.derive_pub(&secp, &vec![zero, zero])
                          .unwrap()
                          .public_key;
-    let address = Address::new_btc().p2wpkh(&public_key, network).unwrap();
+    let address = Address::new_btc().p2wpkh(&secp, &public_key, network).unwrap();
     println!("First receiving address: {}", address);
 
 }

@@ -28,7 +28,7 @@ base64-compat = { version = "1.0.0", optional = true }
 bitcoinconsensus = { version = "0.19.0-2", optional = true, features = ["external-secp"] }
 serde = { version = "1", features = [ "derive" ], optional = true }
 
-grin_secp256k1zkp = { git = "https://github.com/mwcproject/rust-secp256k1-zkp", tag = "0.7.13", features = ["bullet-proof-sizing"] }
+grin_secp256k1zkp = { git = "https://github.com/mwcproject/rust-secp256k1-zkp", tag = "0.7.14", features = ["bullet-proof-sizing"] }
 
 [dev-dependencies]
 serde_json = "<1.0.45"

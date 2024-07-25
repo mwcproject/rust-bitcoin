@@ -33,7 +33,7 @@
 //! };
 //!
 //! // Generate pay-to-pubkey-hash address
-//! let address = Address::new_btc().p2pkh(&public_key, Network::Bitcoin);
+//! let address = Address::new_btc().p2pkh(&s, &public_key, Network::Bitcoin);
 //! ```
 
 use std::fmt::{self, Display, Formatter};
@@ -42,6 +42,7 @@ use std::error;
 
 use bech32;
 use hashes::Hash;
+use secp256k1::Secp256k1;
 use hash_types::{PubkeyHash, WPubkeyHash, ScriptHash, WScriptHash};
 use blockdata::script;
 use network::constants::Network;
@@ -375,9 +376,9 @@ impl Address {
     /// Creates a pay to (compressed) public key hash address from a public key
     /// This is the preferred non-witness type address
     #[inline]
-    pub fn p2pkh(self, pk: &key::PublicKey, network: Network) -> Address {
+    pub fn p2pkh(self, secp: &Secp256k1, pk: &key::PublicKey, network: Network) -> Address {
         let mut hash_engine = PubkeyHash::engine();
-        pk.write_into(&mut hash_engine).expect("engines don't error");
+        pk.write_into(secp, &mut hash_engine).expect("engines don't error");
 
         Address {
             network: network,
@@ -411,13 +412,13 @@ impl Address {
     /// This is the native segwit address type for an output redeemable with a single signature
     ///
     /// Will only return an Error when an uncompressed public key is provided.
-    pub fn p2wpkh(self, pk: &key::PublicKey, network: Network) -> Result<Address, Error> {
+    pub fn p2wpkh(self, secp: &Secp256k1, pk: &key::PublicKey, network: Network) -> Result<Address, Error> {
         if !pk.compressed {
             return Err(Error::UncompressedPubkey);
         }
 
         let mut hash_engine = WPubkeyHash::engine();
-        pk.write_into(&mut hash_engine).expect("engines don't error");
+        pk.write_into(secp, &mut hash_engine).expect("engines don't error");
 
         Ok(Address {
             network: network,
@@ -438,13 +439,13 @@ impl Address {
     /// This is a segwit address type that looks familiar (as p2sh) to legacy clients
     ///
     /// Will only return an Error when an uncompressed public key is provided.
-    pub fn p2shwpkh(self, pk: &key::PublicKey, network: Network) -> Result<Address, Error> {
+    pub fn p2shwpkh(self, secp: &Secp256k1, pk: &key::PublicKey, network: Network) -> Result<Address, Error> {
         if !pk.compressed {
             return Err(Error::UncompressedPubkey);
         }
 
         let mut hash_engine = WPubkeyHash::engine();
-        pk.write_into(&mut hash_engine).expect("engines don't error");
+        pk.write_into(secp, &mut hash_engine).expect("engines don't error");
 
         let builder = script::Builder::new()
             .push_int(0)
@@ -709,6 +710,7 @@ mod tests {
     use std::string::ToString;
 
     use hashes::hex::{FromHex, ToHex};
+    use secp256k1::ContextFlag;
 
     use blockdata::script::Script;
     use network::constants::Network::{Bitcoin, Testnet};
@@ -717,7 +719,7 @@ mod tests {
     use super::*;
 
     macro_rules! hex (($hex:expr) => (Vec::from_hex($hex).unwrap()));
-    macro_rules! hex_key (($hex:expr) => (PublicKey::from_slice(&hex!($hex)).unwrap()));
+    macro_rules! hex_key (($secp:expr, $hex:expr) => (PublicKey::from_slice($secp, &hex!($hex)).unwrap()));
     macro_rules! hex_script (($hex:expr) => (Script::from(hex!($hex))));
     macro_rules! hex_pubkeyhash (($hex:expr) => (PubkeyHash::from_hex(&$hex).unwrap()));
     macro_rules! hex_scripthash (($hex:expr) => (ScriptHash::from_hex($hex).unwrap()));
@@ -755,12 +757,13 @@ mod tests {
 
     #[test]
     fn test_p2pkh_from_key() {
-        let key = hex_key!("048d5141948c1702e8c95f438815794b87f706a8d4cd2bffad1dc1570971032c9b6042a0431ded2478b5c9cf2d81c124a5e57347a3c63ef0e7716cf54d613ba183");
-        let addr = Address::new_btc().p2pkh(&key, Bitcoin);
+        let secp = Secp256k1::with_caps(ContextFlag::None);
+        let key = hex_key!(&secp, "048d5141948c1702e8c95f438815794b87f706a8d4cd2bffad1dc1570971032c9b6042a0431ded2478b5c9cf2d81c124a5e57347a3c63ef0e7716cf54d613ba183");
+        let addr = Address::new_btc().p2pkh(&secp, &key, Bitcoin);
         assert_eq!(&addr.to_string(), "1QJVDzdqb1VpbDK7uDeyVXy9mR27CJiyhY");
 
-        let key = hex_key!(&"03df154ebfcf29d29cc10d5c2565018bce2d9edbab267c31d2caf44a63056cf99f");
-        let addr = Address::new_btc().p2pkh(&key, Testnet);
+        let key = hex_key!(&secp, &"03df154ebfcf29d29cc10d5c2565018bce2d9edbab267c31d2caf44a63056cf99f");
+        let addr = Address::new_btc().p2pkh(&secp, &key, Testnet);
         assert_eq!(&addr.to_string(), "mqkhEMH6NCeYjFybv7pvFC22MFeaNT9AQC");
         assert_eq!(addr.address_type(), Some(AddressType::P2pkh));
         roundtrips(&addr);
@@ -793,16 +796,17 @@ mod tests {
 
     #[test]
     fn test_p2wpkh() {
+        let secp = Secp256k1::with_caps(ContextFlag::None);
         // stolen from Bitcoin transaction: b3c8c2b6cfc335abbcb2c7823a8453f55d64b2b5125a9a61e8737230cdb8ce20
-        let mut key = hex_key!("033bc8c83c52df5712229a2f72206d90192366c36428cb0c12b6af98324d97bfbc");
-        let addr = Address::new_btc().p2wpkh(&key, Bitcoin).unwrap();
+        let mut key = hex_key!(&secp, "033bc8c83c52df5712229a2f72206d90192366c36428cb0c12b6af98324d97bfbc");
+        let addr = Address::new_btc().p2wpkh(&secp, &key, Bitcoin).unwrap();
         assert_eq!(&addr.to_string(), "bc1qvzvkjn4q3nszqxrv3nraga2r822xjty3ykvkuw");
         assert_eq!(addr.address_type(), Some(AddressType::P2wpkh));
         roundtrips(&addr);
 
         // Test uncompressed pubkey
         key.compressed = false;
-        assert_eq!(Address::new_btc().p2wpkh(&key, Bitcoin), Err(Error::UncompressedPubkey));
+        assert_eq!(Address::new_btc().p2wpkh(&secp, &key, Bitcoin), Err(Error::UncompressedPubkey));
     }
 
     #[test]
@@ -821,15 +825,16 @@ mod tests {
     #[test]
     fn test_p2shwpkh() {
         // stolen from Bitcoin transaction: ad3fd9c6b52e752ba21425435ff3dd361d6ac271531fc1d2144843a9f550ad01
-        let mut key = hex_key!("026c468be64d22761c30cd2f12cbc7de255d592d7904b1bab07236897cc4c2e766");
-        let addr = Address::new_btc().p2shwpkh(&key, Bitcoin).unwrap();
+        let secp = Secp256k1::with_caps(ContextFlag::None);
+        let mut key = hex_key!(&secp, "026c468be64d22761c30cd2f12cbc7de255d592d7904b1bab07236897cc4c2e766");
+        let addr = Address::new_btc().p2shwpkh(&secp, &key, Bitcoin).unwrap();
         assert_eq!(&addr.to_string(), "3QBRmWNqqBGme9er7fMkGqtZtp4gjMFxhE");
         assert_eq!(addr.address_type(), Some(AddressType::P2sh));
         roundtrips(&addr);
 
         // Test uncompressed pubkey
         key.compressed = false;
-        assert_eq!(Address::new_btc().p2wpkh(&key, Bitcoin), Err(Error::UncompressedPubkey));
+        assert_eq!(Address::new_btc().p2wpkh(&secp, &key, Bitcoin), Err(Error::UncompressedPubkey));
     }
 
     #[test]

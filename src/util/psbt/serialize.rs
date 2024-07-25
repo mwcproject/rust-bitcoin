@@ -24,6 +24,7 @@ use blockdata::transaction::{SigHashType, Transaction, TxOut};
 use consensus::encode::{self, serialize, Decodable};
 use util::bip32::{ChildNumber, Fingerprint, KeySource};
 use hashes::{hash160, ripemd160, sha256, sha256d, Hash};
+use secp256k1::{ContextFlag, Secp256k1};
 use util::key::PublicKey;
 use util::psbt;
 
@@ -63,14 +64,16 @@ impl Deserialize for Script {
 impl Serialize for PublicKey {
     fn serialize(&self) -> Vec<u8> {
         let mut buf = Vec::new();
-        self.write_into(&mut buf).expect("vecs don't error");
+        let secp = Secp256k1::with_caps(ContextFlag::None);
+        self.write_into(&secp, &mut buf).expect("vecs don't error");
         buf
     }
 }
 
 impl Deserialize for PublicKey {
     fn deserialize(bytes: &[u8]) -> Result<Self, encode::Error> {
-        PublicKey::from_slice(bytes)
+        let secp = Secp256k1::with_caps(ContextFlag::None);
+        PublicKey::from_slice(&secp, bytes)
             .map_err(|_| encode::Error::ParseFailed("invalid public key"))
     }
 }
