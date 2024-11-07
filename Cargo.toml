@@ -1,10 +1,10 @@
 [package]
-name = "bitcoin"
+name = "mwc-bitcoin"
 version = "0.27.0"
 authors = ["Andrew Poelstra <apoelstra@wpsoftware.net>"]
 license = "CC0-1.0"
-homepage = "https://github.com/rust-bitcoin/rust-bitcoin/"
-repository = "https://github.com/rust-bitcoin/rust-bitcoin/"
+homepage = "https://github.com/mwcproject/rust-bitcoin"
+repository = "https://github.com/mwcproject/rust-bitcoin"
 documentation = "https://docs.rs/bitcoin/"
 description = "General purpose library for using and interoperating with Bitcoin and other cryptocurrencies."
 keywords = [ "crypto", "bitcoin" ]
