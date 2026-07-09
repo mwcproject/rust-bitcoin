@@ -1,7 +1,6 @@
 extern crate bitcoin;
-use std::str::FromStr;
-use std::convert::Into;
 
+#[cfg_attr(not(any(feature = "afl", feature = "honggfuzz", test)), allow(dead_code))]
 fn do_test(data: &[u8]) {
     macro_rules! read_ints {
         ($start: expr) => { {
@@ -46,8 +45,16 @@ fn do_test(data: &[u8]) {
     check_eq!(a_native.wrapping_add(b_native), a + b);
     check_eq!(a_native.wrapping_sub(b_native), a - b);
     if b_native != 0 {
-        check_eq!(a_native.wrapping_div(b_native), a / b);
-        check_eq!(a_native.wrapping_rem(b_native), a % b);
+        let div = match a / b {
+            Ok(div) => div,
+            Err(_) => return,
+        };
+        check_eq!(a_native / b_native, div);
+        let rem = match a % b {
+            Ok(rem) => rem,
+            Err(_) => return,
+        };
+        check_eq!(a_native % b_native, rem);
     }
     check_eq!(a_native.wrapping_mul(b_native), a * b);
     check_eq!(a_native & b_native, a & b);
@@ -79,6 +86,11 @@ fn main() {
             do_test(data);
         });
     }
+}
+
+#[cfg(not(any(feature = "afl", feature = "honggfuzz")))]
+fn main() {
+    panic!("not implemented");
 }
 
 #[cfg(test)]

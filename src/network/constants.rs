@@ -28,18 +28,18 @@
 //! # Example: encoding a network's magic bytes
 //!
 //! ```rust
-//! use bitcoin::network::constants::Network;
-//! use bitcoin::consensus::encode::serialize;
+//! use mwc_bitcoin::network::constants::Network;
+//! use mwc_bitcoin::consensus::encode::serialize;
 //!
 //! let network = Network::Bitcoin;
-//! let bytes = serialize(&network.magic());
+//! let bytes = serialize(&network.magic()).unwrap();
 //!
 //! assert_eq!(&bytes[..], &[0xF9, 0xBE, 0xB4, 0xD9]);
 //! ```
 
 use std::{fmt, io, ops};
 
-use consensus::encode::{self, Encodable, Decodable};
+use crate::consensus::encode::{self, Encodable, Decodable};
 
 /// Version of the protocol as appearing in network message headers
 /// This constant is used to signal to other peers which features you support.
@@ -79,7 +79,7 @@ impl Network {
     /// # Examples
     ///
     /// ```rust
-    /// use bitcoin::network::constants::Network;
+    /// use mwc_bitcoin::network::constants::Network;
     ///
     /// assert_eq!(Some(Network::Bitcoin), Network::from_magic(0xD9B4BEF9));
     /// assert_eq!(None, Network::from_magic(0xFFFFFFFF));
@@ -101,7 +101,7 @@ impl Network {
     /// # Examples
     ///
     /// ```rust
-    /// use bitcoin::network::constants::Network;
+    /// use mwc_bitcoin::network::constants::Network;
     ///
     /// let network = Network::Bitcoin;
     /// assert_eq!(network.magic(), 0xD9B4BEF9);
@@ -291,24 +291,24 @@ impl Decodable for ServiceFlags {
 #[cfg(test)]
 mod tests {
     use super::{Network, ServiceFlags};
-    use consensus::encode::{deserialize, serialize};
+    use crate::consensus::encode::{deserialize, serialize};
 
     #[test]
     fn serialize_test() {
         assert_eq!(
-            serialize(&Network::Bitcoin.magic()),
+            serialize(&Network::Bitcoin.magic()).unwrap(),
             &[0xf9, 0xbe, 0xb4, 0xd9]
         );
         assert_eq!(
-            serialize(&Network::Testnet.magic()),
+            serialize(&Network::Testnet.magic()).unwrap(),
             &[0x0b, 0x11, 0x09, 0x07]
         );
         assert_eq!(
-            serialize(&Network::Signet.magic()),
+            serialize(&Network::Signet.magic()).unwrap(),
             &[0x0a, 0x03, 0xcf, 0x40]
         );
         assert_eq!(
-            serialize(&Network::Regtest.magic()),
+            serialize(&Network::Regtest.magic()).unwrap(),
             &[0xfa, 0xbf, 0xb5, 0xda]
         );
 
@@ -384,4 +384,3 @@ mod tests {
         assert_eq!("ServiceFlags(WITNESS|COMPACT_FILTERS|0xb0)", flag.to_string());
     }
 }
-

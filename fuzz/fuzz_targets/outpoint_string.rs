@@ -6,6 +6,7 @@ use bitcoin::consensus::encode;
 
 use std::str::FromStr;
 
+#[cfg_attr(not(any(feature = "afl", feature = "honggfuzz", test)), allow(dead_code))]
 fn do_test(data: &[u8]) {
     let lowercase: Vec<u8> = data.iter().map(|c| match *c {
         b'A' => b'a',
@@ -28,12 +29,12 @@ fn do_test(data: &[u8]) {
             // If we can't deserialize as a string, try consensus deserializing
             let res: Result<OutPoint, _> = encode::deserialize(data);
             if let Ok(deser) = res {
-                let ser = encode::serialize(&deser);
-                assert_eq!(ser, data);
+                let ser = encode::serialize(&deser).unwrap();
+                assert_eq!(&ser[..], data);
                 let string = deser.to_string();
                 match OutPoint::from_str(&string) {
                     Ok(destring) => assert_eq!(destring, deser),
-                    Err(_) => panic!()
+                    Err(_) => return
                 }
             }
         }
@@ -58,6 +59,11 @@ fn main() {
             do_test(data);
         });
     }
+}
+
+#[cfg(not(any(feature = "afl", feature = "honggfuzz")))]
+fn main() {
+    panic!("not implemented");
 }
 
 #[cfg(test)]

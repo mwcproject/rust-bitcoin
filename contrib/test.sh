@@ -59,7 +59,7 @@ if [ -n "$AS_DEPENDENCY" ]
 then
     cargo new dep_test
     cd dep_test
-    echo 'bitcoin = { path = "..", features = ["use-serde"] }' >> Cargo.toml
+    echo 'bitcoin = { package = "mwc-bitcoin", path = "..", features = ["use-serde"] }' >> Cargo.toml
 
     # Pin `cc` for Rust 1.29
     if [ -n "$PIN_VERSIONS" ]; then

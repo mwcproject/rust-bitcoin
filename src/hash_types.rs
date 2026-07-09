@@ -16,43 +16,69 @@
 //! to avoid mixing data of the same hash format (like SHA256d) but of different meaning
 //! (transaction id, block hash etc).
 
-use hashes::{Hash, sha256, sha256d, hash160};
+use crate::hashes::{sha256, sha256d, hash160};
 
 macro_rules! impl_hashencode {
     ($hashtype:ident) => {
         impl $crate::consensus::Encodable for $hashtype {
             fn consensus_encode<S: ::std::io::Write>(&self, s: S) -> Result<usize, ::std::io::Error> {
-                self.0.consensus_encode(s)
+                self.to_byte_array().consensus_encode(s)
             }
         }
 
         impl $crate::consensus::Decodable for $hashtype {
             fn consensus_decode<D: ::std::io::Read>(d: D) -> Result<Self, $crate::consensus::encode::Error> {
-                use $crate::hashes::Hash;
-                Ok(Self::from_inner(<<$hashtype as $crate::hashes::Hash>::Inner>::consensus_decode(d)?))
+                let bytes: [u8; 32] = $crate::consensus::Decodable::consensus_decode(d)?;
+                Ok(Self::from_byte_array(bytes))
             }
         }
-    }
+    };
 }
 
-hash_newtype!(Txid, sha256d::Hash, 32, doc="A bitcoin transaction hash/transaction ID.");
-hash_newtype!(Wtxid, sha256d::Hash, 32, doc="A bitcoin witness transaction ID.");
-hash_newtype!(BlockHash, sha256d::Hash, 32, doc="A bitcoin block hash.");
-hash_newtype!(SigHash, sha256d::Hash, 32, doc="Hash of the transaction according to the signature algorithm");
+hash_newtype! {
+    /// A bitcoin transaction hash/transaction ID.
+    pub struct Txid(pub sha256d::Hash);
+    /// A bitcoin witness transaction ID.
+    pub struct Wtxid(pub sha256d::Hash);
+    /// A bitcoin block hash.
+    pub struct BlockHash(pub sha256d::Hash);
+    /// Hash of the transaction according to the signature algorithm.
+    pub struct SigHash(pub sha256d::Hash);
 
-hash_newtype!(PubkeyHash, hash160::Hash, 20, doc="A hash of a public key.");
-hash_newtype!(ScriptHash, hash160::Hash, 20, doc="A hash of Bitcoin Script bytecode.");
-hash_newtype!(WPubkeyHash, hash160::Hash, 20, doc="SegWit version of a public key hash.");
-hash_newtype!(WScriptHash, sha256::Hash, 32, doc="SegWit version of a Bitcoin Script bytecode hash.");
+    /// A hash of a public key.
+    pub struct PubkeyHash(pub hash160::Hash);
+    /// A hash of Bitcoin Script bytecode.
+    pub struct ScriptHash(pub hash160::Hash);
+    /// SegWit version of a public key hash.
+    pub struct WPubkeyHash(pub hash160::Hash);
+    /// SegWit version of a Bitcoin Script bytecode hash.
+    pub struct WScriptHash(pub sha256::Hash);
 
-hash_newtype!(TxMerkleNode, sha256d::Hash, 32, doc="A hash of the Merkle tree branch or root for transactions");
-hash_newtype!(WitnessMerkleNode, sha256d::Hash, 32, doc="A hash corresponding to the Merkle tree root for witness data");
-hash_newtype!(WitnessCommitment, sha256d::Hash, 32, doc="A hash corresponding to the witness structure commitment in the coinbase transaction");
-hash_newtype!(XpubIdentifier, hash160::Hash, 20, doc="XpubIdentifier as defined in BIP-32.");
+    /// A hash of the Merkle tree branch or root for transactions.
+    pub struct TxMerkleNode(pub sha256d::Hash);
+    /// A hash corresponding to the Merkle tree root for witness data.
+    pub struct WitnessMerkleNode(pub sha256d::Hash);
+    /// A hash corresponding to the witness structure commitment in the coinbase transaction.
+    pub struct WitnessCommitment(pub sha256d::Hash);
+    /// XpubIdentifier as defined in BIP-32.
+    pub struct XpubIdentifier(pub hash160::Hash);
 
-hash_newtype!(FilterHash, sha256d::Hash, 32, doc="Filter hash, as defined in BIP-157");
-hash_newtype!(FilterHeader, sha256d::Hash, 32, doc="Filter header, as defined in BIP-157");
+    /// Filter hash, as defined in BIP-157.
+    pub struct FilterHash(pub sha256d::Hash);
+    /// Filter header, as defined in BIP-157.
+    pub struct FilterHeader(pub sha256d::Hash);
+}
 
+impl_hex_for_newtype!(
+    Txid, Wtxid, BlockHash, SigHash, PubkeyHash, ScriptHash, WPubkeyHash, WScriptHash,
+    TxMerkleNode, WitnessMerkleNode, WitnessCommitment, XpubIdentifier, FilterHash, FilterHeader
+);
+
+#[cfg(feature = "serde")]
+impl_serde_for_newtype!(
+    Txid, Wtxid, BlockHash, SigHash, PubkeyHash, ScriptHash, WPubkeyHash, WScriptHash,
+    TxMerkleNode, WitnessMerkleNode, WitnessCommitment, XpubIdentifier, FilterHash, FilterHeader
+);
 
 impl_hashencode!(Txid);
 impl_hashencode!(Wtxid);

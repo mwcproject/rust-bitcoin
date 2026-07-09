@@ -691,7 +691,10 @@ impl All {
             Class::PushBytes(self.code as u32)
         // 60 opcodes
         } else {
-            Class::Ordinary(Ordinary::try_from_all(self).unwrap())
+            match Ordinary::try_from_all(self) {
+                Some(opcode) => Class::Ordinary(opcode),
+                None => Class::IllegalOp,
+            }
         }
     }
 
@@ -1094,4 +1097,3 @@ mod tests {
         assert_eq!(unique.len(), 256);
     }
 }
-

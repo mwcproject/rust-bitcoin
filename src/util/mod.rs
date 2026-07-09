@@ -35,8 +35,8 @@ pub(crate) mod endian;
 
 use std::{error, fmt};
 
-use network;
-use consensus::encode;
+use crate::network;
+use crate::consensus::encode;
 
 /// A trait which allows numbers to act as fixed-size bit arrays
 pub trait BitArray {

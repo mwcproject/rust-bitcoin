@@ -19,20 +19,20 @@
 
 use std::io;
 
-use blockdata::script::Script;
-use blockdata::transaction::{SigHashType, Transaction, TxOut};
-use consensus::encode::{self, serialize, Decodable};
-use util::bip32::{ChildNumber, Fingerprint, KeySource};
-use hashes::{hash160, ripemd160, sha256, sha256d, Hash};
-use secp256k1::{ContextFlag, Secp256k1};
-use util::key::PublicKey;
-use util::psbt;
+use crate::blockdata::script::Script;
+use crate::blockdata::transaction::{SigHashType, Transaction, TxOut};
+use crate::consensus::encode::{self, serialize, Decodable};
+use crate::util::bip32::{ChildNumber, Fingerprint, KeySource};
+use crate::hashes::{hash160, ripemd160, sha256, sha256d};
+use crate::secp256k1::{ContextFlag, Secp256k1};
+use crate::util::key::PublicKey;
+use crate::util::psbt;
 
 /// A trait for serializing a value as raw data for insertion into PSBT
 /// key-value pairs.
 pub trait Serialize {
     /// Serialize a value as raw data.
-    fn serialize(&self) -> Vec<u8>;
+    fn serialize(&self) -> io::Result<Vec<u8>>;
 }
 
 /// A trait for deserializing a value from raw data in PSBT key-value pairs.
@@ -44,14 +44,14 @@ pub trait Deserialize: Sized {
 impl_psbt_de_serialize!(Transaction);
 impl_psbt_de_serialize!(TxOut);
 impl_psbt_de_serialize!(Vec<Vec<u8>>); // scriptWitness
-impl_psbt_hash_de_serialize!(ripemd160::Hash);
-impl_psbt_hash_de_serialize!(sha256::Hash);
-impl_psbt_hash_de_serialize!(hash160::Hash);
-impl_psbt_hash_de_serialize!(sha256d::Hash);
+impl_psbt_hash_de_serialize!(ripemd160::Hash, 20);
+impl_psbt_hash_de_serialize!(sha256::Hash, 32);
+impl_psbt_hash_de_serialize!(hash160::Hash, 20);
+impl_psbt_hash_de_serialize!(sha256d::Hash, 32);
 
 impl Serialize for Script {
-    fn serialize(&self) -> Vec<u8> {
-        self.to_bytes()
+    fn serialize(&self) -> io::Result<Vec<u8>> {
+        Ok(self.to_bytes())
     }
 }
 
@@ -62,33 +62,36 @@ impl Deserialize for Script {
 }
 
 impl Serialize for PublicKey {
-    fn serialize(&self) -> Vec<u8> {
-        let mut buf = Vec::new();
-        let secp = Secp256k1::with_caps(ContextFlag::None);
-        self.write_into(&secp, &mut buf).expect("vecs don't error");
-        buf
+    fn serialize(&self) -> io::Result<Vec<u8>> {
+        let secp = Secp256k1::with_caps(ContextFlag::None)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+        self.to_bytes(&secp)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
     }
 }
 
 impl Deserialize for PublicKey {
     fn deserialize(bytes: &[u8]) -> Result<Self, encode::Error> {
-        let secp = Secp256k1::with_caps(ContextFlag::None);
+        let secp = Secp256k1::with_caps(ContextFlag::None)
+            .map_err(|_| encode::Error::ParseFailed("failed to create secp256k1 context"))?;
         PublicKey::from_slice(&secp, bytes)
             .map_err(|_| encode::Error::ParseFailed("invalid public key"))
     }
 }
 
 impl Serialize for KeySource {
-    fn serialize(&self) -> Vec<u8> {
+    fn serialize(&self) -> io::Result<Vec<u8>> {
         let mut rv: Vec<u8> = Vec::with_capacity(4 + 4 * (self.1).as_ref().len());
 
         rv.append(&mut self.0.to_bytes().to_vec());
 
         for cnum in self.1.into_iter() {
-            rv.append(&mut serialize(&u32::from(*cnum)))
+            let mut child = serialize(&u32::from(*cnum))
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            rv.append(&mut child)
         }
 
-        rv
+        Ok(rv)
     }
 }
 
@@ -115,8 +118,8 @@ impl Deserialize for KeySource {
 
 // partial sigs
 impl Serialize for Vec<u8> {
-    fn serialize(&self) -> Vec<u8> {
-        self.clone()
+    fn serialize(&self) -> io::Result<Vec<u8>> {
+        Ok(self.clone())
     }
 }
 
@@ -127,8 +130,9 @@ impl Deserialize for Vec<u8> {
 }
 
 impl Serialize for SigHashType {
-    fn serialize(&self) -> Vec<u8> {
+    fn serialize(&self) -> io::Result<Vec<u8>> {
         serialize(&self.as_u32())
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 }
 

@@ -19,11 +19,11 @@
 //! signatures, which are placed in the scriptSig.
 //!
 
-use hashes::{Hash, sha256d};
-use hash_types::SigHash;
-use blockdata::script::Script;
-use blockdata::transaction::{Transaction, TxIn, SigHashType};
-use consensus::{encode, Encodable};
+use crate::hashes::sha256d;
+use crate::hash_types::SigHash;
+use crate::blockdata::script::Script;
+use crate::blockdata::transaction::{Transaction, TxIn, SigHashType};
+use crate::consensus::{encode, Encodable};
 
 use std::io;
 use std::ops::{Deref, DerefMut};
@@ -49,58 +49,55 @@ impl SighashComponents {
     /// information about its inputs.
     /// For the generated sighashes to be valid, no fields in the transaction may change except for
     /// script_sig and witnesses.
-    pub fn new(tx: &Transaction) -> SighashComponents {
+    pub fn new(tx: &Transaction) -> Result<SighashComponents, io::Error> {
         let hash_prevouts = {
-            let mut enc = SigHash::engine();
+            let mut enc = sha256d::Hash::engine();
             for txin in &tx.input {
-                txin.previous_output.consensus_encode(&mut enc).unwrap();
+                txin.previous_output.consensus_encode(&mut enc)?;
             }
-            SigHash::from_engine(enc)
+            SigHash::from_byte_array(sha256d::Hash::from_engine(enc).to_byte_array())
         };
 
         let hash_sequence = {
-            let mut enc = SigHash::engine();
+            let mut enc = sha256d::Hash::engine();
             for txin in &tx.input {
-                txin.sequence.consensus_encode(&mut enc).unwrap();
+                txin.sequence.consensus_encode(&mut enc)?;
             }
-            SigHash::from_engine(enc)
+            SigHash::from_byte_array(sha256d::Hash::from_engine(enc).to_byte_array())
         };
 
         let hash_outputs = {
-            let mut enc = SigHash::engine();
+            let mut enc = sha256d::Hash::engine();
             for txout in &tx.output {
-                txout.consensus_encode(&mut enc).unwrap();
+                txout.consensus_encode(&mut enc)?;
             }
-            SigHash::from_engine(enc)
+            SigHash::from_byte_array(sha256d::Hash::from_engine(enc).to_byte_array())
         };
 
-        SighashComponents {
+        Ok(SighashComponents {
             tx_version: tx.version,
             tx_locktime: tx.lock_time,
             hash_prevouts: hash_prevouts,
             hash_sequence: hash_sequence,
             hash_outputs: hash_outputs,
-        }
+        })
     }
 
     /// Compute the BIP143 sighash for a `SIGHASH_ALL` signature for the given
     /// input.
-    pub fn sighash_all(&self, txin: &TxIn, script_code: &Script, value: u64) -> SigHash {
-        let mut enc = SigHash::engine();
-        self.tx_version.consensus_encode(&mut enc).unwrap();
-        self.hash_prevouts.consensus_encode(&mut enc).unwrap();
-        self.hash_sequence.consensus_encode(&mut enc).unwrap();
-        txin
-            .previous_output
-            .consensus_encode(&mut enc)
-            .unwrap();
-        script_code.consensus_encode(&mut enc).unwrap();
-        value.consensus_encode(&mut enc).unwrap();
-        txin.sequence.consensus_encode(&mut enc).unwrap();
-        self.hash_outputs.consensus_encode(&mut enc).unwrap();
-        self.tx_locktime.consensus_encode(&mut enc).unwrap();
-        1u32.consensus_encode(&mut enc).unwrap(); // hashtype
-        SigHash::from_engine(enc)
+    pub fn sighash_all(&self, txin: &TxIn, script_code: &Script, value: u64) -> Result<SigHash, io::Error> {
+        let mut enc = sha256d::Hash::engine();
+        self.tx_version.consensus_encode(&mut enc)?;
+        self.hash_prevouts.consensus_encode(&mut enc)?;
+        self.hash_sequence.consensus_encode(&mut enc)?;
+        txin.previous_output.consensus_encode(&mut enc)?;
+        script_code.consensus_encode(&mut enc)?;
+        value.consensus_encode(&mut enc)?;
+        txin.sequence.consensus_encode(&mut enc)?;
+        self.hash_outputs.consensus_encode(&mut enc)?;
+        self.tx_locktime.consensus_encode(&mut enc)?;
+        1u32.consensus_encode(&mut enc)?; // hashtype
+        Ok(SigHash::from_byte_array(sha256d::Hash::from_engine(enc).to_byte_array()))
     }
 }
 
@@ -131,42 +128,51 @@ impl<R: Deref<Target=Transaction>> SigHashCache<R> {
     }
 
     /// Calculate hash for prevouts
-    pub fn hash_prevouts(&mut self) -> sha256d::Hash {
-        let hash_prevout = &mut self.hash_prevouts;
-        let input = &self.tx.input;
-        *hash_prevout.get_or_insert_with(|| {
+    pub fn hash_prevouts(&mut self) -> Result<sha256d::Hash, io::Error> {
+        if let Some(hash) = self.hash_prevouts {
+            return Ok(hash);
+        }
+        let hash = {
             let mut enc = sha256d::Hash::engine();
-            for txin in input {
-                txin.previous_output.consensus_encode(&mut enc).unwrap();
+            for txin in &self.tx.input {
+                txin.previous_output.consensus_encode(&mut enc)?;
             }
             sha256d::Hash::from_engine(enc)
-        })
+        };
+        self.hash_prevouts = Some(hash);
+        Ok(hash)
     }
 
     /// Calculate hash for input sequence values
-    pub fn hash_sequence(&mut self) -> sha256d::Hash {
-        let hash_sequence = &mut self.hash_sequence;
-        let input = &self.tx.input;
-        *hash_sequence.get_or_insert_with(|| {
+    pub fn hash_sequence(&mut self) -> Result<sha256d::Hash, io::Error> {
+        if let Some(hash) = self.hash_sequence {
+            return Ok(hash);
+        }
+        let hash = {
             let mut enc = sha256d::Hash::engine();
-            for txin in input {
-                txin.sequence.consensus_encode(&mut enc).unwrap();
+            for txin in &self.tx.input {
+                txin.sequence.consensus_encode(&mut enc)?;
             }
             sha256d::Hash::from_engine(enc)
-        })
+        };
+        self.hash_sequence = Some(hash);
+        Ok(hash)
     }
 
     /// Calculate hash for outputs
-    pub fn hash_outputs(&mut self) -> sha256d::Hash {
-        let hash_output = &mut self.hash_outputs;
-        let output = &self.tx.output;
-        *hash_output.get_or_insert_with(|| {
+    pub fn hash_outputs(&mut self) -> Result<sha256d::Hash, io::Error> {
+        if let Some(hash) = self.hash_outputs {
+            return Ok(hash);
+        }
+        let hash = {
             let mut enc = sha256d::Hash::engine();
-            for txout in output {
-                txout.consensus_encode(&mut enc).unwrap();
+            for txout in &self.tx.output {
+                txout.consensus_encode(&mut enc)?;
             }
             sha256d::Hash::from_engine(enc)
-        })
+        };
+        self.hash_outputs = Some(hash);
+        Ok(hash)
     }
 
     /// Encode the BIP143 signing data for any flag type into a given object implementing a
@@ -179,20 +185,27 @@ impl<R: Deref<Target=Transaction>> SigHashCache<R> {
         value: u64,
         sighash_type: SigHashType,
     ) -> Result<(), encode::Error> {
-        let zero_hash = sha256d::Hash::default();
+        let zero_hash = sha256d::Hash::from_byte_array([0u8; 32]);
+
+        if input_index >= self.tx.input.len() {
+            return Err(encode::Error::SigningInputIndexOutOfBounds {
+                index: input_index,
+                len: self.tx.input.len(),
+            });
+        }
 
         let (sighash, anyone_can_pay) = sighash_type.split_anyonecanpay_flag();
 
         self.tx.version.consensus_encode(&mut writer)?;
 
         if !anyone_can_pay {
-            self.hash_prevouts().consensus_encode(&mut writer)?;
+            self.hash_prevouts()?.consensus_encode(&mut writer)?;
         } else {
             zero_hash.consensus_encode(&mut writer)?;
         }
 
         if !anyone_can_pay && sighash != SigHashType::Single && sighash != SigHashType::None {
-            self.hash_sequence().consensus_encode(&mut writer)?;
+            self.hash_sequence()?.consensus_encode(&mut writer)?;
         } else {
             zero_hash.consensus_encode(&mut writer)?;
         }
@@ -209,11 +222,11 @@ impl<R: Deref<Target=Transaction>> SigHashCache<R> {
         }
 
         if sighash != SigHashType::Single && sighash != SigHashType::None {
-            self.hash_outputs().consensus_encode(&mut writer)?;
+            self.hash_outputs()?.consensus_encode(&mut writer)?;
         } else if sighash == SigHashType::Single && input_index < self.tx.output.len() {
-            let mut single_enc = SigHash::engine();
+            let mut single_enc = sha256d::Hash::engine();
             self.tx.output[input_index].consensus_encode(&mut single_enc)?;
-            SigHash::from_engine(single_enc).consensus_encode(&mut writer)?;
+            SigHash::from_byte_array(sha256d::Hash::from_engine(single_enc).to_byte_array()).consensus_encode(&mut writer)?;
         } else {
             zero_hash.consensus_encode(&mut writer)?;
         }
@@ -231,11 +244,10 @@ impl<R: Deref<Target=Transaction>> SigHashCache<R> {
         script_code: &Script,
         value: u64,
         sighash_type: SigHashType
-    ) -> SigHash {
-        let mut enc = SigHash::engine();
-        self.encode_signing_data_to(&mut enc, input_index, script_code, value, sighash_type)
-            .expect("engines don't error");
-        SigHash::from_engine(enc)
+    ) -> Result<SigHash, encode::Error> {
+        let mut enc = sha256d::Hash::engine();
+        self.encode_signing_data_to(&mut enc, input_index, script_code, value, sighash_type)?;
+        Ok(SigHash::from_byte_array(sha256d::Hash::from_engine(enc).to_byte_array()))
     }
 }
 
@@ -245,9 +257,9 @@ impl<R: DerefMut<Target=Transaction>> SigHashCache<R> {
     ///
     /// This allows in-line signing such as
     /// ```
-    /// use bitcoin::blockdata::transaction::{Transaction, SigHashType};
-    /// use bitcoin::util::bip143::SigHashCache;
-    /// use bitcoin::Script;
+    /// use mwc_bitcoin::blockdata::transaction::{Transaction, SigHashType};
+    /// use mwc_bitcoin::util::bip143::SigHashCache;
+    /// use mwc_bitcoin::Script;
     ///
     /// let mut tx_to_sign = Transaction { version: 2, lock_time: 0, input: Vec::new(), output: Vec::new() };
     /// let input_count = tx_to_sign.input.len();
@@ -268,41 +280,40 @@ impl<R: DerefMut<Target=Transaction>> SigHashCache<R> {
 #[cfg(test)]
 #[allow(deprecated)]
 mod tests {
-    use hash_types::SigHash;
-    use blockdata::script::Script;
-    use blockdata::transaction::Transaction;
-    use consensus::encode::deserialize;
-    use network::constants::Network;
-    use util::address::Address;
-    use util::key::PublicKey;
-    use hashes::hex::FromHex;
-    use secp256k1::{ContextFlag, Secp256k1};
+    use crate::hash_types::SigHash;
+    use crate::blockdata::script::Script;
+    use crate::blockdata::transaction::Transaction;
+    use crate::consensus::encode::deserialize;
+    use crate::network::constants::Network;
+    use crate::util::address::Address;
+    use crate::util::key::PublicKey;
+    use crate::hashes::hex;
+    use crate::secp256k1::{ContextFlag, Secp256k1};
 
     use super::*;
 
     fn p2pkh_hex(pk: &str) -> Script {
-        let pk = Vec::from_hex(pk).unwrap();
-        let secp = Secp256k1::with_caps(ContextFlag::None);
+        let pk = hex::decode_to_vec(pk).unwrap();
+        let secp = Secp256k1::with_caps(ContextFlag::None).unwrap();
         let pk = PublicKey::from_slice(&secp, pk.as_slice()).unwrap();
-        let witness_script = Address::new_btc().p2pkh(&secp, &pk, Network::Bitcoin).script_pubkey();
+        let witness_script = Address::new_btc().p2pkh(&secp, &pk, Network::Bitcoin).unwrap().script_pubkey().unwrap();
         witness_script
     }
 
     fn run_test_sighash_bip143(tx: &str, script: &str, input_index: usize, value: u64, hash_type: u32, expected_result: &str) {
-        let tx: Transaction = deserialize(&Vec::<u8>::from_hex(tx).unwrap()[..]).unwrap();
-        let script = Script::from(Vec::<u8>::from_hex(script).unwrap());
-        let raw_expected = SigHash::from_hex(expected_result).unwrap();
-        let expected_result = SigHash::from_slice(&raw_expected[..]).unwrap();
+        let tx: Transaction = deserialize(&hex::decode_to_vec(tx).unwrap()[..]).unwrap();
+        let script = Script::from(hex::decode_to_vec(script).unwrap());
+        let expected_result = <SigHash as ::std::str::FromStr>::from_str(expected_result).unwrap();
         let mut cache = SigHashCache::new(&tx);
         let sighash_type = SigHashType::from_u32(hash_type);
-        let actual_result = cache.signature_hash(input_index, &script, value, sighash_type);
+        let actual_result = cache.signature_hash(input_index, &script, value, sighash_type).unwrap();
         assert_eq!(actual_result, expected_result);
     }
 
     #[test]
     fn bip143_p2wpkh() {
         let tx = deserialize::<Transaction>(
-            &Vec::from_hex(
+            &hex::decode_to_vec(
                 "0100000002fff7f7881a8099afa6940d42d1e7f6362bec38171ea3edf433541db4e4ad969f000000\
                 0000eeffffffef51e1b804cc89d182d279655c3aa89e815b1b309fe287d9b2b55d57b90ec68a01000000\
                 00ffffffff02202cb206000000001976a9148280b37df378db99f66f85c95a783a76ac7a6d5988ac9093\
@@ -313,7 +324,7 @@ mod tests {
         let witness_script = p2pkh_hex("025476c2e83188368da1ff3e292e7acafcdb3566bb0ad253f62fc70f07aeee6357");
         let value = 600_000_000;
 
-        let comp = SighashComponents::new(&tx);
+        let comp = SighashComponents::new(&tx).unwrap();
         assert_eq!(
             comp,
             SighashComponents {
@@ -332,7 +343,7 @@ mod tests {
         );
 
         assert_eq!(
-            comp.sighash_all(&tx.input[1], &witness_script, value),
+            comp.sighash_all(&tx.input[1], &witness_script, value).unwrap(),
             hex_hash!(SigHash, "c37af31116d1b27caf68aae9e3ac82f1477929014d5b917657d0eb49478cb670")
         );
     }
@@ -340,7 +351,7 @@ mod tests {
     #[test]
     fn bip143_p2wpkh_nested_in_p2sh() {
         let tx = deserialize::<Transaction>(
-            &Vec::from_hex(
+            &hex::decode_to_vec(
                 "0100000001db6b1b20aa0fd7b23880be2ecbd4a98130974cf4748fb66092ac4d3ceb1a5477010000\
                 0000feffffff02b8b4eb0b000000001976a914a457b684d7f0d539a46a45bbc043f35b59d0d96388ac00\
                 08af2f000000001976a914fd270b1ee6abcaea97fea7ad0402e8bd8ad6d77c88ac92040000",
@@ -349,7 +360,7 @@ mod tests {
 
         let witness_script = p2pkh_hex("03ad1d8e89212f0b92c74d23bb710c00662ad1470198ac48c43f7d6f93a2a26873");
         let value = 1_000_000_000;
-        let comp = SighashComponents::new(&tx);
+        let comp = SighashComponents::new(&tx).unwrap();
         assert_eq!(
             comp,
             SighashComponents {
@@ -368,7 +379,7 @@ mod tests {
         );
 
         assert_eq!(
-            comp.sighash_all(&tx.input[0], &witness_script, value),
+            comp.sighash_all(&tx.input[0], &witness_script, value).unwrap(),
             hex_hash!(SigHash, "64f3b0f4dd2bb3aa1ce8566d220cc74dda9df97d8490cc81d89d735c92e59fb6")
         );
     }
@@ -376,7 +387,7 @@ mod tests {
     #[test]
     fn bip143_p2wsh_nested_in_p2sh() {
         let tx = deserialize::<Transaction>(
-            &Vec::from_hex(
+            &hex::decode_to_vec(
             "010000000136641869ca081e70f394c6948e8af409e18b619df2ed74aa106c1ca29787b96e0100000000\
              ffffffff0200e9a435000000001976a914389ffce9cd9ae88dcc0631e88a821ffdbe9bfe2688acc0832f\
              05000000001976a9147480a33f950689af511e6e84c138dbbd3c3ee41588ac00000000").unwrap()[..],
@@ -392,7 +403,7 @@ mod tests {
         );
         let value = 987654321;
 
-        let comp = SighashComponents::new(&tx);
+        let comp = SighashComponents::new(&tx).unwrap();
         assert_eq!(
             comp,
             SighashComponents {
@@ -411,7 +422,7 @@ mod tests {
         );
 
         assert_eq!(
-            comp.sighash_all(&tx.input[0], &witness_script, value),
+            comp.sighash_all(&tx.input[0], &witness_script, value).unwrap(),
             hex_hash!(SigHash, "185c0be5263dce5b4bb50a047973c1b6272bfbd0103a89444597dc40b248ee7c")
         );
     }

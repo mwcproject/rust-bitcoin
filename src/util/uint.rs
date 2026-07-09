@@ -18,6 +18,29 @@
 //! The functions here are designed to be fast.
 //!
 
+use std::{error, fmt};
+
+/// Arithmetic error from fixed-size unsigned integer operations.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum Error {
+    /// Division or remainder by zero.
+    DivisionByZero,
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            Error::DivisionByZero => f.write_str("division by zero"),
+        }
+    }
+}
+
+impl error::Error for Error {
+    fn cause(&self) -> Option<&dyn error::Error> {
+        None
+    }
+}
+
 macro_rules! construct_uint {
     ($name:ident, $n_words:expr) => (
         /// Little-endian large integer type
@@ -104,7 +127,7 @@ macro_rules! construct_uint {
 
             // divmod like operation, returns (quotient, remainder)
             #[inline]
-            fn div_rem(self, other: Self) -> (Self, Self) {
+            fn div_rem(self, other: Self) -> Result<(Self, Self), $crate::util::uint::Error> {
                 let mut sub_copy = self;
                 let mut shift_copy = other;
                 let mut ret = [0u64; $n_words];
@@ -113,11 +136,13 @@ macro_rules! construct_uint {
                 let your_bits = other.bits();
 
                 // Check for division by 0
-                assert!(your_bits != 0);
+                if your_bits == 0 {
+                    return Err($crate::util::uint::Error::DivisionByZero);
+                }
 
                 // Early return in case we are dividing by a larger number than us
                 if my_bits < your_bits {
-                    return ($name(ret), sub_copy);
+                    return Ok(($name(ret), sub_copy));
                 }
 
                 // Bitwise long division
@@ -135,7 +160,7 @@ macro_rules! construct_uint {
                     shift -= 1;
                 }
 
-                ($name(ret), sub_copy)
+                Ok(($name(ret), sub_copy))
             }
         }
 
@@ -205,18 +230,18 @@ macro_rules! construct_uint {
         }
 
         impl ::std::ops::Div<$name> for $name {
-            type Output = $name;
+            type Output = Result<$name, $crate::util::uint::Error>;
 
-            fn div(self, other: $name) -> $name {
-                self.div_rem(other).0
+            fn div(self, other: $name) -> Result<$name, $crate::util::uint::Error> {
+                Ok(self.div_rem(other)?.0)
             }
         }
 
         impl ::std::ops::Rem<$name> for $name {
-            type Output = $name;
+            type Output = Result<$name, $crate::util::uint::Error>;
 
-            fn rem(self, other: $name) -> $name {
-                self.div_rem(other).1
+            fn rem(self, other: $name) -> Result<$name, $crate::util::uint::Error> {
+                Ok(self.div_rem(other)?.1)
             }
         }
 
@@ -383,9 +408,15 @@ macro_rules! construct_uint {
                 mut s: S,
             ) -> Result<usize, ::std::io::Error> {
                 let &$name(ref data) = self;
-                let mut len = 0;
+                let mut len: usize = 0;
                 for word in data.iter() {
-                    len += word.consensus_encode(&mut s)?;
+                    len = len.checked_add(word.consensus_encode(&mut s)?)
+                        .ok_or_else(|| {
+                            ::std::io::Error::new(
+                                ::std::io::ErrorKind::InvalidData,
+                                "encoded length overflow",
+                            )
+                        })?;
                 }
                 Ok(len)
             }
@@ -436,9 +467,9 @@ impl Uint256 {
 
 #[cfg(test)]
 mod tests {
-    use consensus::{deserialize, serialize};
-    use util::uint::{Uint256, Uint128};
-    use util::BitArray;
+    use crate::consensus::{deserialize, serialize};
+    use crate::util::uint::{Error, Uint256, Uint128};
+    use crate::util::BitArray;
 
     #[test]
     pub fn uint256_bits_test() {
@@ -528,18 +559,19 @@ mod tests {
         let mult = sub.mul_u32(300);
         assert_eq!(mult, Uint256([0x8C8C3EE70C644118u64, 0x0209E7378231E632, 0, 0]));
         // Division
-        assert_eq!(Uint256::from_u64(105).unwrap() /
-                   Uint256::from_u64(5).unwrap(),
+        assert_eq!((Uint256::from_u64(105).unwrap() /
+                   Uint256::from_u64(5).unwrap()).unwrap(),
                    Uint256::from_u64(21).unwrap());
-        let div = mult / Uint256::from_u64(300).unwrap();
+        let div = (mult / Uint256::from_u64(300).unwrap()).unwrap();
         assert_eq!(div, Uint256([0x9F30411021524112u64, 0x0001BD5B7DDFBD5A, 0, 0]));
+        assert_eq!(mult / Uint256::from_u64(0).unwrap(), Err(Error::DivisionByZero));
 
-        assert_eq!(Uint256::from_u64(105).unwrap() % Uint256::from_u64(5).unwrap(),
+        assert_eq!((Uint256::from_u64(105).unwrap() % Uint256::from_u64(5).unwrap()).unwrap(),
                    Uint256::from_u64(0).unwrap());
-        assert_eq!(Uint256::from_u64(35498456).unwrap() % Uint256::from_u64(3435).unwrap(),
+        assert_eq!((Uint256::from_u64(35498456).unwrap() % Uint256::from_u64(3435).unwrap()).unwrap(),
                    Uint256::from_u64(1166).unwrap());
         let rem_src = mult * Uint256::from_u64(39842).unwrap() + Uint256::from_u64(9054).unwrap();
-        assert_eq!(rem_src % Uint256::from_u64(39842).unwrap(),
+        assert_eq!((rem_src % Uint256::from_u64(39842).unwrap()).unwrap(),
                    Uint256::from_u64(9054).unwrap());
         // TODO: bit inversion
     }
@@ -604,8 +636,8 @@ mod tests {
     pub fn uint256_serialize_test() {
         let start1 = Uint256([0x8C8C3EE70C644118u64, 0x0209E7378231E632, 0, 0]);
         let start2 = Uint256([0x8C8C3EE70C644118u64, 0x0209E7378231E632, 0xABCD, 0xFFFF]);
-        let serial1 = serialize(&start1);
-        let serial2 = serialize(&start2);
+        let serial1 = serialize(&start1).unwrap();
+        let serial2 = serialize(&start2).unwrap();
         let end1: Result<Uint256, _> = deserialize(&serial1);
         let end2: Result<Uint256, _> = deserialize(&serial2);
 

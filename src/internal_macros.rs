@@ -24,8 +24,16 @@ macro_rules! impl_consensus_encoding {
                 &self,
                 mut s: S,
             ) -> Result<usize, ::std::io::Error> {
-                let mut len = 0;
-                $(len += self.$field.consensus_encode(&mut s)?;)+
+                let mut len: usize = 0;
+                $(
+                    len = len.checked_add(self.$field.consensus_encode(&mut s)?)
+                        .ok_or_else(|| {
+                            ::std::io::Error::new(
+                                ::std::io::ErrorKind::InvalidData,
+                                "encoded length overflow",
+                            )
+                        })?;
+                )+
                 Ok(len)
             }
         }
@@ -84,9 +92,10 @@ macro_rules! impl_array_newtype {
 
         impl<'a> ::std::convert::From<&'a [$ty]> for $thing {
             fn from(data: &'a [$ty]) -> $thing {
-                assert_eq!(data.len(), $len);
+                debug_assert_eq!(data.len(), $len);
                 let mut ret = [0; $len];
-                ret.copy_from_slice(&data[..]);
+                let len = ::std::cmp::min(data.len(), $len);
+                ret[..len].copy_from_slice(&data[..len]);
                 $thing(ret)
             }
         }
@@ -161,7 +170,7 @@ macro_rules! display_from_debug {
 macro_rules! hex_script (($s:expr) => (<$crate::Script as ::std::str::FromStr>::from_str($s).unwrap()));
 
 #[cfg(test)]
-macro_rules! hex_hash (($h:ident, $s:expr) => ($h::from_slice(&<Vec<u8> as $crate::hashes::hex::FromHex>::from_hex($s).unwrap()).unwrap()));
+macro_rules! hex_hash (($h:ident, $s:expr) => ($h::from_byte_array($crate::hashes::hex::decode_to_array($s).unwrap())));
 
 macro_rules! serde_string_impl {
     ($name:ident, $expecting:expr) => {
@@ -172,7 +181,6 @@ macro_rules! serde_string_impl {
                 D: $crate::serde::de::Deserializer<'de>,
             {
                 use ::std::fmt::{self, Formatter};
-                use ::std::str::FromStr;
 
                 struct Visitor;
                 impl<'de> $crate::serde::de::Visitor<'de> for Visitor {
@@ -186,7 +194,7 @@ macro_rules! serde_string_impl {
                     where
                         E: $crate::serde::de::Error,
                     {
-                        $name::from_str(v).map_err(E::custom)
+                        <$name as ::std::str::FromStr>::from_str(v).map_err(E::custom)
                     }
 
                     fn visit_borrowed_str<E>(self, v: &'de str) -> Result<Self::Value, E>
@@ -407,19 +415,16 @@ macro_rules! serde_struct_human_string_impl {
 
 /// Implements several traits for byte-based newtypes.
 /// Implements:
-/// - std::fmt::LowerHex (implies hashes::hex::ToHex)
+/// - std::fmt::LowerHex
 /// - std::fmt::Display
 /// - std::str::FromStr
-/// - hashes::hex::FromHex
 macro_rules! impl_bytes_newtype {
     ($t:ident, $len:expr) => (
 
         impl ::std::fmt::LowerHex for $t {
             fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
-                for &ch in self.0.iter() {
-                    write!(f, "{:02x}", ch)?;
-                }
-                Ok(())
+                use $crate::hashes::hex::DisplayHex;
+                ::std::fmt::LowerHex::fmt(&self.0.as_hex(), f)
             }
         }
 
@@ -435,28 +440,10 @@ macro_rules! impl_bytes_newtype {
             }
         }
 
-        impl $crate::hashes::hex::FromHex for $t {
-            fn from_byte_iter<I>(iter: I) -> Result<Self, $crate::hashes::hex::Error>
-                where I: ::std::iter::Iterator<Item=Result<u8, $crate::hashes::hex::Error>> +
-                    ::std::iter::ExactSizeIterator +
-                    ::std::iter::DoubleEndedIterator,
-            {
-                if iter.len() == $len {
-                    let mut ret = [0; $len];
-                    for (n, byte) in iter.enumerate() {
-                        ret[n] = byte?;
-                    }
-                    Ok($t(ret))
-                } else {
-                    Err($crate::hashes::hex::Error::InvalidLength(2 * $len, 2 * iter.len()))
-                }
-            }
-        }
-
         impl ::std::str::FromStr for $t {
-            type Err = $crate::hashes::hex::Error;
+            type Err = $crate::hashes::hex::DecodeFixedLengthBytesError;
             fn from_str(s: &str) -> Result<Self, Self::Err> {
-                $crate::hashes::hex::FromHex::from_hex(s)
+                $crate::hashes::hex::decode_to_array::<$len>(s).map($t)
             }
         }
 
@@ -464,7 +451,7 @@ macro_rules! impl_bytes_newtype {
         impl $crate::serde::Serialize for $t {
             fn serialize<S: $crate::serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
                 if s.is_human_readable() {
-                    s.serialize_str(&$crate::hashes::hex::ToHex::to_hex(self))
+                    s.collect_str(self)
                 } else {
                     s.serialize_bytes(&self[..])
                 }
@@ -489,7 +476,7 @@ macro_rules! impl_bytes_newtype {
                             E: $crate::serde::de::Error,
                         {
                             if let Ok(hex) = ::std::str::from_utf8(v) {
-                                $crate::hashes::hex::FromHex::from_hex(hex).map_err(E::custom)
+                                <$t as ::std::str::FromStr>::from_str(hex).map_err(E::custom)
                             } else {
                                 return Err(E::invalid_value($crate::serde::de::Unexpected::Bytes(v), &self));
                             }
@@ -499,7 +486,7 @@ macro_rules! impl_bytes_newtype {
                         where
                             E: $crate::serde::de::Error,
                         {
-                            $crate::hashes::hex::FromHex::from_hex(v).map_err(E::custom)
+                            <$t as ::std::str::FromStr>::from_str(v).map_err(E::custom)
                         }
                     }
 

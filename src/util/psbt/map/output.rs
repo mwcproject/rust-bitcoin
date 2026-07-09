@@ -16,14 +16,14 @@ use std::io;
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 
-use blockdata::script::Script;
-use consensus::encode;
-use util::bip32::KeySource;
-use util::key::PublicKey;
-use util::psbt;
-use util::psbt::map::Map;
-use util::psbt::raw;
-use util::psbt::Error;
+use crate::blockdata::script::Script;
+use crate::consensus::encode;
+use crate::util::bip32::KeySource;
+use crate::util::key::PublicKey;
+use crate::util::psbt;
+use crate::util::psbt::map::Map;
+use crate::util::psbt::raw;
+use crate::util::psbt::Error;
 
 /// Type: Redeem Script PSBT_OUT_REDEEM_SCRIPT = 0x00
 const PSBT_OUT_REDEEM_SCRIPT: u8 = 0x00;
@@ -45,13 +45,13 @@ pub struct Output {
     pub witness_script: Option<Script>,
     /// A map from public keys needed to spend this output to their
     /// corresponding master key fingerprints and derivation paths.
-    #[cfg_attr(feature = "serde", serde(with = "::serde_utils::btreemap_as_seq"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::btreemap_as_seq"))]
     pub bip32_derivation: BTreeMap<PublicKey, KeySource>,
     /// Proprietary key-value pairs for this output.
-    #[cfg_attr(feature = "serde", serde(with = "::serde_utils::btreemap_as_seq_byte_values"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::btreemap_as_seq_byte_values"))]
     pub proprietary: BTreeMap<raw::ProprietaryKey, Vec<u8>>,
     /// Unknown key-value pairs for this output.
-    #[cfg_attr(feature = "serde", serde(with = "::serde_utils::btreemap_as_seq_byte_values"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::btreemap_as_seq_byte_values"))]
     pub unknown: BTreeMap<raw::Key, Vec<u8>>,
 }
 
@@ -108,7 +108,7 @@ impl Map for Output {
 
         for (key, value) in self.proprietary.iter() {
             rv.push(raw::Pair {
-                key: key.to_key(),
+                key: key.to_key()?,
                 value: value.clone(),
             });
         }

@@ -16,16 +16,16 @@
 //! Keys used in Bitcoin that can be roundtrip (de)serialized.
 //!
 
-use std::fmt::{self, Write};
+use std::fmt;
 use std::{io, ops, error};
 use std::str::FromStr;
 
-use secp256k1::{self, ContextFlag, Secp256k1};
-use network::constants::Network;
-use hashes::{Hash, hash160};
-use hash_types::{PubkeyHash, WPubkeyHash};
-use util::base58;
-use util::misc::hex_bytes;
+use crate::secp256k1::{self, ContextFlag, Secp256k1};
+use crate::network::constants::Network;
+use crate::hashes::hash160;
+use crate::hash_types::{PubkeyHash, WPubkeyHash};
+use crate::util::base58;
+use crate::util::misc::hex_bytes;
 
 /// A key-related error.
 #[derive(Debug)]
@@ -50,7 +50,7 @@ impl error::Error for Error {
     fn cause(&self) -> Option<&dyn error::Error> {
         match *self {
             Error::Base58(ref e) => Some(e),
-            Error::Secp256k1(ref e) => Some(e),
+            Error::Secp256k1(_) => None,
         }
     }
 }
@@ -80,34 +80,28 @@ pub struct PublicKey {
 
 impl PublicKey {
     /// Returns bitcoin 160-bit hash of the public key
-    pub fn pubkey_hash(&self, secp: &Secp256k1) -> PubkeyHash {
-        if self.compressed {
-            PubkeyHash::hash(&self.key.serialize_vec(secp, true).to_vec())
-        } else {
-            PubkeyHash::hash(&self.key.serialize_vec(secp, false).to_vec())
-        }
+    pub fn pubkey_hash(&self, secp: &Secp256k1) -> Result<PubkeyHash, Error> {
+        let serialized = self.key.serialize_vec(secp, self.compressed).map_err(Error::Secp256k1)?;
+        Ok(PubkeyHash::from_byte_array(hash160::Hash::hash(serialized.as_slice()).to_byte_array()))
     }
 
     /// Returns bitcoin 160-bit hash of the public key for witness program
-    pub fn wpubkey_hash(&self, secp: &Secp256k1) -> Option<WPubkeyHash> {
+    pub fn wpubkey_hash(&self, secp: &Secp256k1) -> Result<Option<WPubkeyHash>, Error> {
         if self.compressed {
-            Some(WPubkeyHash::from_inner(
-                hash160::Hash::hash(&self.key.serialize_vec(secp, true).to_vec()).into_inner()
-            ))
+            let serialized = self.key.serialize_vec(secp, true).map_err(Error::Secp256k1)?;
+            Ok(Some(WPubkeyHash::from_byte_array(hash160::Hash::hash(serialized.as_slice()).to_byte_array())))
         } else {
             // We can't create witness pubkey hashes for an uncompressed
             // public keys
-            None
+            Ok(None)
         }
     }
 
     /// Write the public key into a writer
     pub fn write_into<W: io::Write>(&self, secp: &Secp256k1, mut writer: W) -> Result<(), io::Error> {
-        if self.compressed {
-            writer.write_all(&self.key.serialize_vec(secp, true).to_vec())
-        } else {
-            writer.write_all(&self.key.serialize_vec(secp, false).to_vec())
-        }
+        let serialized = self.key.serialize_vec(secp, self.compressed)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+        writer.write_all(serialized.as_slice())
     }
 
     /// Read the public key from a reader
@@ -129,10 +123,9 @@ impl PublicKey {
     }
 
     /// Serialize the public key to bytes
-    pub fn to_bytes(&self, secp: &Secp256k1) -> Vec<u8> {
-        let mut buf = Vec::new();
-        self.write_into(secp, &mut buf).expect("vecs don't error");
-        buf
+    pub fn to_bytes(&self, secp: &Secp256k1) -> Result<Vec<u8>, Error> {
+        let serialized = self.key.serialize_vec(secp, self.compressed).map_err(Error::Secp256k1)?;
+        Ok(serialized.to_vec())
     }
 
     /// Deserialize a public key from a slice
@@ -150,22 +143,17 @@ impl PublicKey {
     }
 
     /// Computes the public key as supposed to be used with this secret
-    pub fn from_private_key(secp: &Secp256k1, sk: &PrivateKey) -> PublicKey {
+    pub fn from_private_key(secp: &Secp256k1, sk: &PrivateKey) -> Result<PublicKey, Error> {
         sk.public_key(secp)
     }
 }
 
 impl fmt::Display for PublicKey {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let secp = Secp256k1::with_caps(ContextFlag::None);
-        if self.compressed {
-            for ch in &self.key.serialize_vec(&secp, true)[..] {
-                write!(f, "{:02x}", ch)?;
-            }
-        } else {
-            for ch in &self.key.serialize_vec(&secp, false)[..] {
-                write!(f, "{:02x}", ch)?;
-            }
+        let secp = Secp256k1::with_caps(ContextFlag::None).map_err(|_| fmt::Error)?;
+        let serialized = self.key.serialize_vec(&secp, self.compressed).map_err(|_| fmt::Error)?;
+        for ch in serialized.as_slice() {
+            write!(f, "{:02x}", ch)?;
         }
         Ok(())
     }
@@ -176,7 +164,7 @@ impl FromStr for PublicKey {
     fn from_str(s: &str) -> Result<PublicKey, Error> {
         let data = hex_bytes(s)
             .map_err(|e| base58::Error::Other(format!("Unable to parse the HEX {}, {}", s, e)) )?;
-        let secp = Secp256k1::with_caps(ContextFlag::None);
+        let secp = Secp256k1::with_caps(ContextFlag::None)?;
         let key = secp256k1::PublicKey::from_slice(&secp, &data)?;
         Ok(PublicKey {
             key: key,
@@ -198,11 +186,11 @@ pub struct PrivateKey {
 
 impl PrivateKey {
     /// Creates a public key from this private key
-    pub fn public_key(&self, secp: &Secp256k1) -> PublicKey {
-        PublicKey {
+    pub fn public_key(&self, secp: &Secp256k1) -> Result<PublicKey, Error> {
+        Ok(PublicKey {
             compressed: self.compressed,
-            key: secp256k1::PublicKey::from_secret_key(secp, &self.key).unwrap()
-        }
+            key: secp256k1::PublicKey::from_secret_key(secp, &self.key)?,
+        })
     }
 
     /// Serialize the private key to bytes
@@ -229,10 +217,18 @@ impl PrivateKey {
 
     /// Get WIF encoding of this private key.
     pub fn to_wif(&self) -> String {
-        let mut buf = String::new();
-        buf.write_fmt(format_args!("{}", self)).unwrap();
-        buf.shrink_to_fit();
-        buf
+        let mut ret = [0; 34];
+        ret[0] = match self.network {
+            Network::Bitcoin => 128,
+            Network::Testnet | Network::Signet | Network::Regtest => 239,
+        };
+        ret[1..33].copy_from_slice(&self.key[..]);
+        if self.compressed {
+            ret[33] = 1;
+            base58::check_encode_slice(&ret[..])
+        } else {
+            base58::check_encode_slice(&ret[..33])
+        }
     }
 
     /// Parse WIF encoded private key.
@@ -274,7 +270,7 @@ impl fmt::Debug for PrivateKey {
 impl FromStr for PrivateKey {
     type Err = Error;
     fn from_str(s: &str) -> Result<PrivateKey, Error> {
-        let secp = Secp256k1::with_caps(ContextFlag::None);
+        let secp = Secp256k1::with_caps(ContextFlag::None)?;
         PrivateKey::from_wif(&secp, s)
     }
 }
@@ -334,11 +330,9 @@ impl ::serde::Serialize for PublicKey {
         if s.is_human_readable() {
             s.collect_str(self)
         } else {
-            if self.compressed {
-                s.serialize_bytes(&self.key.serialize()[..])
-            } else {
-                s.serialize_bytes(&self.key.serialize_uncompressed()[..])
-            }
+            let secp = Secp256k1::with_caps(ContextFlag::None).map_err(::serde::ser::Error::custom)?;
+            let serialized = self.key.serialize_vec(&secp, self.compressed).map_err(::serde::ser::Error::custom)?;
+            s.serialize_bytes(&serialized[..])
         }
     }
 }
@@ -389,7 +383,8 @@ impl<'de> ::serde::Deserialize<'de> for PublicKey {
                 where
                     E: ::serde::de::Error,
                 {
-                    PublicKey::from_slice(v).map_err(E::custom)
+                    let secp = Secp256k1::with_caps(ContextFlag::None).map_err(E::custom)?;
+                    PublicKey::from_slice(&secp, v).map_err(E::custom)
                 }
             }
 
@@ -401,24 +396,23 @@ impl<'de> ::serde::Deserialize<'de> for PublicKey {
 #[cfg(test)]
 mod tests {
     use super::{PrivateKey, PublicKey};
-    use secp256k1::{ContextFlag, Secp256k1};
+    use crate::secp256k1::{ContextFlag, Secp256k1};
     use std::io;
     use std::str::FromStr;
-    use hashes::hex::ToHex;
-    use network::constants::Network::Testnet;
-    use network::constants::Network::Bitcoin;
-    use util::address::Address;
+    use crate::network::constants::Network::Testnet;
+    use crate::network::constants::Network::Bitcoin;
+    use crate::util::address::Address;
 
     #[test]
     fn test_key_derivation() {
-        let secp = Secp256k1::new();
+        let secp = Secp256k1::new().unwrap();
         // testnet compressed
         let sk = PrivateKey::from_wif(&secp, "cVt4o7BGAig1UXywgGSmARhxMdzP5qvQsxKkSsc1XEkw3tDTQFpy").unwrap();
         assert_eq!(sk.network, Testnet);
         assert_eq!(sk.compressed, true);
         assert_eq!(&sk.to_wif(), "cVt4o7BGAig1UXywgGSmARhxMdzP5qvQsxKkSsc1XEkw3tDTQFpy");
 
-        let pk = Address::new_btc().p2pkh(&secp, &sk.public_key(&secp), sk.network);
+        let pk = Address::new_btc().p2pkh(&secp, &sk.public_key(&secp).unwrap(), sk.network).unwrap();
         assert_eq!(&pk.to_string(), "mqwpxxvfv3QbM8PU8uBx2jaNt9btQqvQNx");
 
         // test string conversion
@@ -433,12 +427,12 @@ mod tests {
         assert_eq!(sk.compressed, false);
         assert_eq!(&sk.to_wif(), "5JYkZjmN7PVMjJUfJWfRFwtuXTGB439XV6faajeHPAM9Z2PT2R3");
 
-        let secp = Secp256k1::new();
-        let mut pk = sk.public_key(&secp);
+        let secp = Secp256k1::new().unwrap();
+        let mut pk = sk.public_key(&secp).unwrap();
         assert_eq!(pk.compressed, false);
         assert_eq!(&pk.to_string(), "042e58afe51f9ed8ad3cc7897f634d881fdbe49a81564629ded8156bebd2ffd1af191923a2964c177f5b5923ae500fca49e99492d534aa3759d6b25a8bc971b133");
         assert_eq!(pk, PublicKey::from_str("042e58afe51f9ed8ad3cc7897f634d881fdbe49a81564629ded8156bebd2ffd1af191923a2964c177f5b5923ae500fca49e99492d534aa3759d6b25a8bc971b133").unwrap());
-        let addr = Address::new_btc().p2pkh(&secp, &pk, sk.network);
+        let addr = Address::new_btc().p2pkh(&secp, &pk, sk.network).unwrap();
         assert_eq!(&addr.to_string(), "1GhQvF6dL8xa6wBxLnWmHcQsurx9RxiMc8");
         pk.compressed = true;
         assert_eq!(&pk.to_string(), "032e58afe51f9ed8ad3cc7897f634d881fdbe49a81564629ded8156bebd2ffd1af");
@@ -447,20 +441,20 @@ mod tests {
 
     #[test]
     fn test_pubkey_hash() {
-        let secp = Secp256k1::with_caps(ContextFlag::None);
+        let secp = Secp256k1::with_caps(ContextFlag::None).unwrap();
         let pk = PublicKey::from_str("032e58afe51f9ed8ad3cc7897f634d881fdbe49a81564629ded8156bebd2ffd1af").unwrap();
         let upk = PublicKey::from_str("042e58afe51f9ed8ad3cc7897f634d881fdbe49a81564629ded8156bebd2ffd1af191923a2964c177f5b5923ae500fca49e99492d534aa3759d6b25a8bc971b133").unwrap();
-        assert_eq!(pk.pubkey_hash(&secp).to_hex(), "9511aa27ef39bbfa4e4f3dd15f4d66ea57f475b4");
-        assert_eq!(upk.pubkey_hash(&secp).to_hex(), "ac2e7daf42d2c97418fd9f78af2de552bb9c6a7a");
+        assert_eq!(pk.pubkey_hash(&secp).unwrap().to_string(), "9511aa27ef39bbfa4e4f3dd15f4d66ea57f475b4");
+        assert_eq!(upk.pubkey_hash(&secp).unwrap().to_string(), "ac2e7daf42d2c97418fd9f78af2de552bb9c6a7a");
     }
 
     #[test]
     fn test_wpubkey_hash() {
-        let secp = Secp256k1::with_caps(ContextFlag::None);
+        let secp = Secp256k1::with_caps(ContextFlag::None).unwrap();
         let pk = PublicKey::from_str("032e58afe51f9ed8ad3cc7897f634d881fdbe49a81564629ded8156bebd2ffd1af").unwrap();
         let upk = PublicKey::from_str("042e58afe51f9ed8ad3cc7897f634d881fdbe49a81564629ded8156bebd2ffd1af191923a2964c177f5b5923ae500fca49e99492d534aa3759d6b25a8bc971b133").unwrap();
-        assert_eq!(pk.wpubkey_hash(&secp).unwrap().to_hex(), "9511aa27ef39bbfa4e4f3dd15f4d66ea57f475b4");
-        assert_eq!(upk.wpubkey_hash(&secp), None);
+        assert_eq!(pk.wpubkey_hash(&secp).unwrap().unwrap().to_string(), "9511aa27ef39bbfa4e4f3dd15f4d66ea57f475b4");
+        assert_eq!(upk.wpubkey_hash(&secp).unwrap(), None);
     }
 
     #[cfg(feature = "serde")]
@@ -494,18 +488,18 @@ mod tests {
             0xe9, 0x71, 0xd8, 0x6b, 0x5e, 0x61, 0x87, 0x5d,
         ];
 
-        let s = Secp256k1::new();
+        let s = Secp256k1::new().unwrap();
         let sk = PrivateKey::from_str(&KEY_WIF).unwrap();
-        let pk = PublicKey::from_private_key(&s, &sk);
+        let pk = PublicKey::from_private_key(&s, &sk).unwrap();
         let pk_u = PublicKey {
             key: pk.key,
             compressed: false,
         };
 
         assert_tokens(&sk, &[Token::BorrowedStr(KEY_WIF)]);
-        assert_tokens(&pk.compact(), &[Token::BorrowedBytes(&PK_BYTES[..])]);
+        assert_tokens(&pk.clone().compact(), &[Token::BorrowedBytes(&PK_BYTES[..])]);
         assert_tokens(&pk.readable(), &[Token::BorrowedStr(PK_STR)]);
-        assert_tokens(&pk_u.compact(), &[Token::BorrowedBytes(&PK_BYTES_U[..])]);
+        assert_tokens(&pk_u.clone().compact(), &[Token::BorrowedBytes(&PK_BYTES_U[..])]);
         assert_tokens(&pk_u.readable(), &[Token::BorrowedStr(PK_STR_U)]);
     }
 
@@ -533,7 +527,7 @@ mod tests {
 
     #[test]
     fn pubkey_read_write() {
-        let secp = Secp256k1::with_caps(ContextFlag::None);
+        let secp = Secp256k1::with_caps(ContextFlag::None).unwrap();
 
         const N_KEYS: usize = 20;
         let keys: Vec<_> = (0..N_KEYS).map(|i| random_key(&secp, i as u8)).collect();

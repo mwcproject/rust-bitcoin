@@ -16,7 +16,7 @@
 
 use std::default;
 use std::error;
-use std::fmt::{self, Write};
+use std::fmt;
 use std::ops;
 use std::str::FromStr;
 use std::cmp::Ordering;
@@ -116,6 +116,29 @@ impl fmt::Display for ParseAmountError {
 }
 
 impl error::Error for ParseAmountError {}
+
+/// An error during amount arithmetic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AmountArithmeticError {
+    /// The operation overflowed.
+    Overflow,
+    /// The operation underflowed.
+    Underflow,
+    /// Division or remainder by zero was requested.
+    DivisionByZero,
+}
+
+impl fmt::Display for AmountArithmeticError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            AmountArithmeticError::Overflow => f.write_str("amount arithmetic overflow"),
+            AmountArithmeticError::Underflow => f.write_str("amount arithmetic underflow"),
+            AmountArithmeticError::DivisionByZero => f.write_str("amount arithmetic division by zero"),
+        }
+    }
+}
+
+impl error::Error for AmountArithmeticError {}
 
 fn is_too_precise(s: &str, precision: usize) -> bool {
     s.contains('.') || precision >= s.len() || s.chars().rev().take(precision).any(|d| d != '0')
@@ -252,13 +275,9 @@ fn fmt_satoshi_in(
 /// Warning!
 ///
 /// This type implements several arithmetic operations from [std::ops].
-/// To prevent errors due to overflow or underflow when using these operations,
-/// it is advised to instead use the checked arithmetic methods whose names
-/// start with `checked_`.  The operations from [std::ops] that [Amount]
-/// implements will panic when overflow or underflow occurs.  Also note that
-/// since the internal representation of amounts is unsigned, subtracting below
-/// zero is considered an underflow and will cause a panic if you're not using
-/// the checked arithmetic methods.
+/// These operations return [Result] so overflow, underflow, and division by zero
+/// are reported as errors. The checked arithmetic methods whose names start
+/// with `checked_` remain available when [Option]-based handling is preferred.
 ///
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Amount(u64);
@@ -317,7 +336,7 @@ impl Amount {
     /// use [from_str_in].
     pub fn from_str_with_denomination(s: &str) -> Result<Amount, ParseAmountError> {
         let mut split = s.splitn(3, ' ');
-        let amt_str = split.next().unwrap();
+        let amt_str = split.next().ok_or(ParseAmountError::InvalidFormat)?;
         let denom_str = split.next().ok_or(ParseAmountError::InvalidFormat)?;
         if split.next().is_some() {
             return Err(ParseAmountError::InvalidFormat);
@@ -330,7 +349,12 @@ impl Amount {
     ///
     /// Please be aware of the risk of using floating-point numbers.
     pub fn to_float_in(self, denom: Denomination) -> f64 {
-        f64::from_str(&self.to_string_in(denom)).unwrap()
+        let precision = denom.precision();
+        if precision < 0 {
+            self.as_sat() as f64 / 10f64.powi(-precision)
+        } else {
+            self.as_sat() as f64 * 10f64.powi(precision)
+        }
     }
 
     /// Express this [Amount] as a floating-point value in Bitcoin.
@@ -367,18 +391,31 @@ impl Amount {
     ///
     /// Does not include the denomination.
     pub fn to_string_in(self, denom: Denomination) -> String {
-        let mut buf = String::new();
-        self.fmt_value_in(&mut buf, denom).unwrap();
-        buf
+        let satoshi = self.as_sat();
+        let precision = denom.precision();
+        match precision.cmp(&0) {
+            Ordering::Greater => format!("{}{:0width$}", satoshi, 0, width = precision as usize),
+            Ordering::Less => {
+                let nb_decimals = precision.abs() as usize;
+                let real = format!("{:0width$}", satoshi, width = nb_decimals);
+                if real.len() == nb_decimals {
+                    format!("0.{}", &real[real.len() - nb_decimals..])
+                } else {
+                    format!(
+                        "{}.{}",
+                        &real[0..(real.len() - nb_decimals)],
+                        &real[real.len() - nb_decimals..]
+                    )
+                }
+            }
+            Ordering::Equal => satoshi.to_string(),
+        }
     }
 
     /// Get a formatted string of this [Amount] in the given denomination,
     /// suffixed with the abbreviation for the denomination.
     pub fn to_string_with_denomination(self, denom: Denomination) -> String {
-        let mut buf = String::new();
-        self.fmt_value_in(&mut buf, denom).unwrap();
-        write!(buf, " {}", denom).unwrap();
-        buf
+        format!("{} {}", self.to_string_in(denom), denom)
     }
 
     // Some arithmetic that doesn't fit in `std::ops` traits.
@@ -447,72 +484,50 @@ impl fmt::Display for Amount {
 }
 
 impl ops::Add for Amount {
-    type Output = Amount;
+    type Output = Result<Amount, AmountArithmeticError>;
 
     fn add(self, rhs: Amount) -> Self::Output {
-        self.checked_add(rhs).expect("Amount addition error")
-    }
-}
-
-impl ops::AddAssign for Amount {
-    fn add_assign(&mut self, other: Amount) {
-        *self = *self + other
+        self.checked_add(rhs).ok_or(AmountArithmeticError::Overflow)
     }
 }
 
 impl ops::Sub for Amount {
-    type Output = Amount;
+    type Output = Result<Amount, AmountArithmeticError>;
 
     fn sub(self, rhs: Amount) -> Self::Output {
-        self.checked_sub(rhs).expect("Amount subtraction error")
-    }
-}
-
-impl ops::SubAssign for Amount {
-    fn sub_assign(&mut self, other: Amount) {
-        *self = *self - other
+        self.checked_sub(rhs).ok_or(AmountArithmeticError::Underflow)
     }
 }
 
 impl ops::Rem<u64> for Amount {
-    type Output = Amount;
+    type Output = Result<Amount, AmountArithmeticError>;
 
-    fn rem(self, modulus: u64) -> Self {
-        self.checked_rem(modulus).expect("Amount remainder error")
-    }
-}
-
-impl ops::RemAssign<u64> for Amount {
-    fn rem_assign(&mut self, modulus: u64) {
-        *self = *self % modulus
+    fn rem(self, modulus: u64) -> Self::Output {
+        if modulus == 0 {
+            Err(AmountArithmeticError::DivisionByZero)
+        } else {
+            self.checked_rem(modulus).ok_or(AmountArithmeticError::Overflow)
+        }
     }
 }
 
 impl ops::Mul<u64> for Amount {
-    type Output = Amount;
+    type Output = Result<Amount, AmountArithmeticError>;
 
     fn mul(self, rhs: u64) -> Self::Output {
-        self.checked_mul(rhs).expect("Amount multiplication error")
-    }
-}
-
-impl ops::MulAssign<u64> for Amount {
-    fn mul_assign(&mut self, rhs: u64) {
-        *self = *self * rhs
+        self.checked_mul(rhs).ok_or(AmountArithmeticError::Overflow)
     }
 }
 
 impl ops::Div<u64> for Amount {
-    type Output = Amount;
+    type Output = Result<Amount, AmountArithmeticError>;
 
     fn div(self, rhs: u64) -> Self::Output {
-        self.checked_div(rhs).expect("Amount division error")
-    }
-}
-
-impl ops::DivAssign<u64> for Amount {
-    fn div_assign(&mut self, rhs: u64) {
-        *self = *self / rhs
+        if rhs == 0 {
+            Err(AmountArithmeticError::DivisionByZero)
+        } else {
+            self.checked_div(rhs).ok_or(AmountArithmeticError::Overflow)
+        }
     }
 }
 
@@ -533,10 +548,9 @@ impl FromStr for Amount {
 /// Warning!
 ///
 /// This type implements several arithmetic operations from [std::ops].
-/// To prevent errors due to overflow or underflow when using these operations,
-/// it is advised to instead use the checked arithmetic methods whose names
-/// start with `checked_`.  The operations from [std::ops] that [Amount]
-/// implements will panic when overflow or underflow occurs.
+/// These operations return [Result] so overflow, underflow, and division by zero
+/// are reported as errors. The checked arithmetic methods whose names start
+/// with `checked_` remain available when [Option]-based handling is preferred.
 ///
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SignedAmount(i64);
@@ -595,7 +609,7 @@ impl SignedAmount {
     /// use [from_str_in].
     pub fn from_str_with_denomination(s: &str) -> Result<SignedAmount, ParseAmountError> {
         let mut split = s.splitn(3, ' ');
-        let amt_str = split.next().unwrap();
+        let amt_str = split.next().ok_or(ParseAmountError::InvalidFormat)?;
         let denom_str = split.next().ok_or(ParseAmountError::InvalidFormat)?;
         if split.next().is_some() {
             return Err(ParseAmountError::InvalidFormat);
@@ -608,7 +622,12 @@ impl SignedAmount {
     ///
     /// Please be aware of the risk of using floating-point numbers.
     pub fn to_float_in(self, denom: Denomination) -> f64 {
-        f64::from_str(&self.to_string_in(denom)).unwrap()
+        let precision = denom.precision();
+        if precision < 0 {
+            self.as_sat() as f64 / 10f64.powi(-precision)
+        } else {
+            self.as_sat() as f64 * 10f64.powi(precision)
+        }
     }
 
     /// Express this [SignedAmount] as a floating-point value in Bitcoin.
@@ -638,36 +657,54 @@ impl SignedAmount {
     ///
     /// Does not include the denomination.
     pub fn fmt_value_in(self, f: &mut dyn fmt::Write, denom: Denomination) -> fmt::Result {
-        let sats = self.as_sat().checked_abs().map(|a: i64| a as u64).unwrap_or_else(|| {
-            // We could also hard code this into `9223372036854775808`
-            u64::max_value() - self.as_sat() as u64 +1
-        });
+        let sats = match self.as_sat().checked_abs() {
+            Some(sats) => sats as u64,
+            None => return Err(fmt::Error),
+        };
         fmt_satoshi_in(sats, self.is_negative(), f, denom)
     }
 
     /// Get a string number of this [SignedAmount] in the given denomination.
     ///
     /// Does not include the denomination.
-    pub fn to_string_in(self, denom: Denomination) -> String {
-        let mut buf = String::new();
-        self.fmt_value_in(&mut buf, denom).unwrap();
-        buf
+    pub fn to_string_in(self, denom: Denomination) -> Result<String, AmountArithmeticError> {
+        let satoshi = match self.as_sat().checked_abs() {
+            Some(satoshi) => satoshi as u64,
+            None => return Err(AmountArithmeticError::Overflow),
+        };
+        let prefix = if self.is_negative() { "-" } else { "" };
+        let precision = denom.precision();
+        Ok(match precision.cmp(&0) {
+            Ordering::Greater => format!("{}{}{:0width$}", prefix, satoshi, 0, width = precision as usize),
+            Ordering::Less => {
+                let nb_decimals = precision.abs() as usize;
+                let real = format!("{:0width$}", satoshi, width = nb_decimals);
+                if real.len() == nb_decimals {
+                    format!("{}0.{}", prefix, &real[real.len() - nb_decimals..])
+                } else {
+                    format!(
+                        "{}{}.{}",
+                        prefix,
+                        &real[0..(real.len() - nb_decimals)],
+                        &real[real.len() - nb_decimals..]
+                    )
+                }
+            }
+            Ordering::Equal => format!("{}{}", prefix, satoshi),
+        })
     }
 
     /// Get a formatted string of this [SignedAmount] in the given denomination,
     /// suffixed with the abbreviation for the denomination.
-    pub fn to_string_with_denomination(self, denom: Denomination) -> String {
-        let mut buf = String::new();
-        self.fmt_value_in(&mut buf, denom).unwrap();
-        write!(buf, " {}", denom).unwrap();
-        buf
+    pub fn to_string_with_denomination(self, denom: Denomination) -> Result<String, AmountArithmeticError> {
+        Ok(format!("{} {}", self.to_string_in(denom)?, denom))
     }
 
     // Some arithmetic that doesn't fit in `std::ops` traits.
 
     /// Get the absolute value of this [SignedAmount].
-    pub fn abs(self) -> SignedAmount {
-        SignedAmount(self.0.abs())
+    pub fn abs(self) -> Result<SignedAmount, AmountArithmeticError> {
+        self.checked_abs().ok_or(AmountArithmeticError::Overflow)
     }
 
     /// Returns a number representing sign of this [SignedAmount].
@@ -772,72 +809,50 @@ impl fmt::Display for SignedAmount {
 }
 
 impl ops::Add for SignedAmount {
-    type Output = SignedAmount;
+    type Output = Result<SignedAmount, AmountArithmeticError>;
 
     fn add(self, rhs: SignedAmount) -> Self::Output {
-        self.checked_add(rhs).expect("SignedAmount addition error")
-    }
-}
-
-impl ops::AddAssign for SignedAmount {
-    fn add_assign(&mut self, other: SignedAmount) {
-        *self = *self + other
+        self.checked_add(rhs).ok_or(AmountArithmeticError::Overflow)
     }
 }
 
 impl ops::Sub for SignedAmount {
-    type Output = SignedAmount;
+    type Output = Result<SignedAmount, AmountArithmeticError>;
 
     fn sub(self, rhs: SignedAmount) -> Self::Output {
-        self.checked_sub(rhs).expect("SignedAmount subtraction error")
-    }
-}
-
-impl ops::SubAssign for SignedAmount {
-    fn sub_assign(&mut self, other: SignedAmount) {
-        *self = *self - other
+        self.checked_sub(rhs).ok_or(AmountArithmeticError::Overflow)
     }
 }
 
 impl ops::Rem<i64> for SignedAmount {
-    type Output = SignedAmount;
+    type Output = Result<SignedAmount, AmountArithmeticError>;
 
-    fn rem(self, modulus: i64) -> Self {
-        self.checked_rem(modulus).expect("SignedAmount remainder error")
-    }
-}
-
-impl ops::RemAssign<i64> for SignedAmount {
-    fn rem_assign(&mut self, modulus: i64) {
-        *self = *self % modulus
+    fn rem(self, modulus: i64) -> Self::Output {
+        if modulus == 0 {
+            Err(AmountArithmeticError::DivisionByZero)
+        } else {
+            self.checked_rem(modulus).ok_or(AmountArithmeticError::Overflow)
+        }
     }
 }
 
 impl ops::Mul<i64> for SignedAmount {
-    type Output = SignedAmount;
+    type Output = Result<SignedAmount, AmountArithmeticError>;
 
     fn mul(self, rhs: i64) -> Self::Output {
-        self.checked_mul(rhs).expect("SignedAmount multiplication error")
-    }
-}
-
-impl ops::MulAssign<i64> for SignedAmount {
-    fn mul_assign(&mut self, rhs: i64) {
-        *self = *self * rhs
+        self.checked_mul(rhs).ok_or(AmountArithmeticError::Overflow)
     }
 }
 
 impl ops::Div<i64> for SignedAmount {
-    type Output = SignedAmount;
+    type Output = Result<SignedAmount, AmountArithmeticError>;
 
     fn div(self, rhs: i64) -> Self::Output {
-        self.checked_div(rhs).expect("SignedAmount division error")
-    }
-}
-
-impl ops::DivAssign<i64> for SignedAmount {
-    fn div_assign(&mut self, rhs: i64) {
-        *self = *self / rhs
+        if rhs == 0 {
+            Err(AmountArithmeticError::DivisionByZero)
+        } else {
+            self.checked_div(rhs).ok_or(AmountArithmeticError::Overflow)
+        }
     }
 }
 
@@ -861,17 +876,17 @@ pub mod serde {
     //!
     //! ```rust,ignore
     //! use serde::{Serialize, Deserialize};
-    //! use bitcoin::Amount;
+    //! use mwc_bitcoin::Amount;
     //!
     //! #[derive(Serialize, Deserialize)]
     //! pub struct HasAmount {
-    //!     #[serde(with = "bitcoin::util::amount::serde::as_btc")]
+    //!     #[serde(with = "mwc_bitcoin::util::amount::serde::as_btc")]
     //!     pub amount: Amount,
     //! }
     //! ```
 
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    use util::amount::{Amount, Denomination, SignedAmount};
+    use crate::util::amount::{Amount, Denomination, SignedAmount};
 
     /// This trait is used only to avoid code duplication and naming collisions
     /// of the different serde serialization crates.
@@ -919,7 +934,7 @@ pub mod serde {
         //! Use with `#[serde(with = "amount::serde::as_sat")]`.
 
         use serde::{Deserializer, Serializer};
-        use util::amount::serde::SerdeAmount;
+        use crate::util::amount::serde::SerdeAmount;
 
         pub fn serialize<A: SerdeAmount, S: Serializer>(a: &A, s: S) -> Result<S::Ok, S::Error> {
             a.ser_sat(s)
@@ -934,7 +949,7 @@ pub mod serde {
             //! Use with `#[serde(default, with = "amount::serde::as_sat::opt")]`.
 
             use serde::{Deserializer, Serializer};
-            use util::amount::serde::SerdeAmount;
+            use crate::util::amount::serde::SerdeAmount;
 
             pub fn serialize<A: SerdeAmount, S: Serializer>(
                 a: &Option<A>,
@@ -959,7 +974,7 @@ pub mod serde {
         //! Use with `#[serde(with = "amount::serde::as_btc")]`.
 
         use serde::{Deserializer, Serializer};
-        use util::amount::serde::SerdeAmount;
+        use crate::util::amount::serde::SerdeAmount;
 
         pub fn serialize<A: SerdeAmount, S: Serializer>(a: &A, s: S) -> Result<S::Ok, S::Error> {
             a.ser_btc(s)
@@ -974,7 +989,7 @@ pub mod serde {
             //! Use with `#[serde(default, with = "amount::serde::as_btc::opt")]`.
 
             use serde::{Deserializer, Serializer};
-            use util::amount::serde::SerdeAmount;
+            use crate::util::amount::serde::SerdeAmount;
 
             pub fn serialize<A: SerdeAmount, S: Serializer>(
                 a: &Option<A>,
@@ -998,7 +1013,6 @@ pub mod serde {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::panic;
     use std::str::FromStr;
 
     #[cfg(feature = "serde")]
@@ -1009,33 +1023,30 @@ mod tests {
         let sat = Amount::from_sat;
         let ssat = SignedAmount::from_sat;
 
-        assert_eq!(sat(15) + sat(15), sat(30));
-        assert_eq!(sat(15) - sat(15), sat(0));
-        assert_eq!(sat(14) * 3, sat(42));
-        assert_eq!(sat(14) / 2, sat(7));
-        assert_eq!(sat(14) % 3, sat(2));
-        assert_eq!(ssat(15) - ssat(20), ssat(-5));
-        assert_eq!(ssat(-14) * 3, ssat(-42));
-        assert_eq!(ssat(-14) / 2, ssat(-7));
-        assert_eq!(ssat(-14) % 3, ssat(-2));
+        assert_eq!(sat(15) + sat(15), Ok(sat(30)));
+        assert_eq!(sat(15) - sat(15), Ok(sat(0)));
+        assert_eq!(sat(14) * 3, Ok(sat(42)));
+        assert_eq!(sat(14) / 2, Ok(sat(7)));
+        assert_eq!(sat(14) % 3, Ok(sat(2)));
+        assert_eq!(ssat(15) - ssat(20), Ok(ssat(-5)));
+        assert_eq!(ssat(-14) * 3, Ok(ssat(-42)));
+        assert_eq!(ssat(-14) / 2, Ok(ssat(-7)));
+        assert_eq!(ssat(-14) % 3, Ok(ssat(-2)));
 
         let mut b = ssat(-5);
-        b += ssat(13);
+        b = (b + ssat(13)).unwrap();
         assert_eq!(b, ssat(8));
-        b -= ssat(3);
+        b = (b - ssat(3)).unwrap();
         assert_eq!(b, ssat(5));
-        b *= 6;
+        b = (b * 6).unwrap();
         assert_eq!(b, ssat(30));
-        b /= 3;
+        b = (b / 3).unwrap();
         assert_eq!(b, ssat(10));
-        b %= 3;
+        b = (b % 3).unwrap();
         assert_eq!(b, ssat(1));
 
-        // panic on overflow
-        let result = panic::catch_unwind(|| Amount::max_value() + Amount::from_sat(1));
-        assert!(result.is_err());
-        let result = panic::catch_unwind(|| Amount::from_sat(8446744073709551615) * 3);
-        assert!(result.is_err());
+        assert_eq!(Amount::max_value() + Amount::from_sat(1), Err(AmountArithmeticError::Overflow));
+        assert_eq!(Amount::from_sat(8446744073709551615) * 3, Err(AmountArithmeticError::Overflow));
     }
 
     #[test]
@@ -1139,7 +1150,7 @@ mod tests {
         // make sure satoshi > i64::max_value() is checked.
         let amount = Amount::from_sat(i64::max_value() as u64);
         assert_eq!(Amount::from_str_in(&amount.to_string_in(sat), sat), Ok(amount));
-        assert_eq!(Amount::from_str_in(&(amount+Amount(1)).to_string_in(sat), sat), Err(E::TooBig));
+        assert_eq!(Amount::from_str_in(&(amount+Amount(1)).unwrap().to_string_in(sat), sat), Err(E::TooBig));
 
         assert_eq!(p("12.000", Denomination::MilliSatoshi), Err(E::TooPrecise));
         // exactly 50 chars.
@@ -1155,17 +1166,17 @@ mod tests {
         assert_eq!(Amount::ONE_BTC.to_string_in(D::Bitcoin), "1.00000000");
         assert_eq!(Amount::ONE_BTC.to_string_in(D::Satoshi), "100000000");
         assert_eq!(Amount::ONE_SAT.to_string_in(D::Bitcoin), "0.00000001");
-        assert_eq!(SignedAmount::from_sat(-42).to_string_in(D::Bitcoin), "-0.00000042");
+        assert_eq!(SignedAmount::from_sat(-42).to_string_in(D::Bitcoin).unwrap(), "-0.00000042");
 
         assert_eq!(Amount::ONE_BTC.to_string_with_denomination(D::Bitcoin), "1.00000000 BTC");
         assert_eq!(Amount::ONE_SAT.to_string_with_denomination(D::MilliSatoshi), "1000 msat");
         assert_eq!(
-            SignedAmount::ONE_BTC.to_string_with_denomination(D::Satoshi),
+            SignedAmount::ONE_BTC.to_string_with_denomination(D::Satoshi).unwrap(),
             "100000000 satoshi"
         );
         assert_eq!(Amount::ONE_SAT.to_string_with_denomination(D::Bitcoin), "0.00000001 BTC");
         assert_eq!(
-            SignedAmount::from_sat(-42).to_string_with_denomination(D::Bitcoin),
+            SignedAmount::from_sat(-42).to_string_with_denomination(D::Bitcoin).unwrap(),
             "-0.00000042 BTC"
         );
     }
@@ -1238,11 +1249,11 @@ mod tests {
         let sa_sat = SignedAmount::from_sat;
 
         assert_eq!("0.50", Amount::from_sat(50).to_string_in(D::Bit));
-        assert_eq!("-0.50", SignedAmount::from_sat(-50).to_string_in(D::Bit));
+        assert_eq!("-0.50", SignedAmount::from_sat(-50).to_string_in(D::Bit).unwrap());
         assert_eq!("0.00253583", Amount::from_sat(253583).to_string_in(D::Bitcoin));
-        assert_eq!("-5", SignedAmount::from_sat(-5).to_string_in(D::Satoshi));
+        assert_eq!("-5", SignedAmount::from_sat(-5).to_string_in(D::Satoshi).unwrap());
         assert_eq!("0.10000000", Amount::from_sat(100_000_00).to_string_in(D::Bitcoin));
-        assert_eq!("-100.00", SignedAmount::from_sat(-10_000).to_string_in(D::Bit));
+        assert_eq!("-100.00", SignedAmount::from_sat(-10_000).to_string_in(D::Bit).unwrap());
 
         assert_eq!(ua_str(&ua_sat(0).to_string_in(D::Satoshi), D::Satoshi), Ok(ua_sat(0)));
         assert_eq!(ua_str(&ua_sat(500).to_string_in(D::Bitcoin), D::Bitcoin), Ok(ua_sat(500)));
@@ -1251,11 +1262,11 @@ mod tests {
         assert_eq!(ua_str(&ua_sat(1_000_000_000_000).to_string_in(D::MilliBitcoin), D::MilliBitcoin), Ok(ua_sat(1_000_000_000_000)));
         assert_eq!(ua_str(&ua_sat(u64::max_value()).to_string_in(D::MilliBitcoin), D::MilliBitcoin),  Err(ParseAmountError::TooBig));
 
-        assert_eq!(sa_str(&sa_sat(-1).to_string_in(D::MicroBitcoin), D::MicroBitcoin), Ok(sa_sat(-1)));
+        assert_eq!(sa_str(&sa_sat(-1).to_string_in(D::MicroBitcoin).unwrap(), D::MicroBitcoin), Ok(sa_sat(-1)));
 
-        assert_eq!(sa_str(&sa_sat(i64::max_value()).to_string_in(D::Satoshi), D::MicroBitcoin), Err(ParseAmountError::TooBig));
+        assert_eq!(sa_str(&sa_sat(i64::max_value()).to_string_in(D::Satoshi).unwrap(), D::MicroBitcoin), Err(ParseAmountError::TooBig));
         // Test an overflow bug in `abs()`
-        assert_eq!(sa_str(&sa_sat(i64::min_value()).to_string_in(D::Satoshi), D::MicroBitcoin), Err(ParseAmountError::TooBig));
+        assert_eq!(sa_sat(i64::min_value()).to_string_in(D::Satoshi), Err(AmountArithmeticError::Overflow));
 
     }
 
@@ -1281,9 +1292,9 @@ mod tests {
 
         #[derive(Serialize, Deserialize, PartialEq, Debug)]
         struct T {
-            #[serde(with = "::util::amount::serde::as_sat")]
+            #[serde(with = "crate::util::amount::serde::as_sat")]
             pub amt: Amount,
-            #[serde(with = "::util::amount::serde::as_sat")]
+            #[serde(with = "crate::util::amount::serde::as_sat")]
             pub samt: SignedAmount,
         }
 
@@ -1313,9 +1324,9 @@ mod tests {
 
         #[derive(Serialize, Deserialize, PartialEq, Debug)]
         struct T {
-            #[serde(with = "::util::amount::serde::as_btc")]
+            #[serde(with = "crate::util::amount::serde::as_btc")]
             pub amt: Amount,
-            #[serde(with = "::util::amount::serde::as_btc")]
+            #[serde(with = "crate::util::amount::serde::as_btc")]
             pub samt: SignedAmount,
         }
 
@@ -1347,9 +1358,9 @@ mod tests {
 
         #[derive(Serialize, Deserialize, PartialEq, Debug)]
         struct T {
-            #[serde(default, with = "::util::amount::serde::as_btc::opt")]
+            #[serde(default, with = "crate::util::amount::serde::as_btc::opt")]
             pub amt: Option<Amount>,
-            #[serde(default, with = "::util::amount::serde::as_btc::opt")]
+            #[serde(default, with = "crate::util::amount::serde::as_btc::opt")]
             pub samt: Option<SignedAmount>,
         }
 

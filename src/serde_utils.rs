@@ -8,7 +8,7 @@ pub mod btreemap_byte_values {
     // NOTE: This module can be exactly copied to use with HashMap.
 
     use ::std::collections::BTreeMap;
-    use hashes::hex::{FromHex, ToHex};
+    use crate::hashes::hex::{self, DisplayHex};
     use serde;
 
     pub fn serialize<S, T>(v: &BTreeMap<T, Vec<u8>>, s: S)
@@ -24,7 +24,7 @@ pub mod btreemap_byte_values {
         } else {
             let mut map = s.serialize_map(Some(v.len()))?;
             for (key, value) in v.iter() {
-                map.serialize_entry(key, &value.to_hex())?;
+                map.serialize_entry(key, &value.to_lower_hex_string())?;
             }
             map.end()
         }
@@ -51,8 +51,8 @@ pub mod btreemap_byte_values {
                 -> Result<Self::Value, A::Error>
             {
                 let mut ret = BTreeMap::new();
-                while let Some((key, value)) = a.next_entry()? {
-                    ret.insert(key, FromHex::from_hex(value).map_err(serde::de::Error::custom)?);
+                while let Some((key, value)) = a.next_entry::<T, String>()? {
+                    ret.insert(key, hex::decode_to_vec(&value).map_err(serde::de::Error::custom)?);
                 }
                 Ok(ret)
             }
@@ -150,7 +150,7 @@ pub mod btreemap_as_seq_byte_values {
     #[derive(Debug, Deserialize)]
     struct OwnedPair<T>(
         T,
-        #[serde(deserialize_with = "::serde_utils::hex_bytes::deserialize")]
+        #[serde(deserialize_with = "crate::serde_utils::hex_bytes::deserialize")]
         Vec<u8>,
     );
 
@@ -158,7 +158,7 @@ pub mod btreemap_as_seq_byte_values {
     #[derive(Debug, Serialize)]
     struct BorrowedPair<'a, T: 'static>(
         &'a T,
-        #[serde(serialize_with = "::serde_utils::hex_bytes::serialize")]
+        #[serde(serialize_with = "crate::serde_utils::hex_bytes::serialize")]
         &'a [u8],
     );
 
@@ -222,7 +222,7 @@ pub mod hex_bytes {
     //! Module for serialization of byte arrays as hex strings.
     #![allow(missing_docs)]
 
-    use hashes::hex::{FromHex, ToHex};
+    use crate::hashes::hex::{self, DisplayHex};
     use serde;
 
     pub fn serialize<T, S>(bytes: &T, s: S) -> Result<S::Ok, S::Error>
@@ -232,16 +232,16 @@ pub mod hex_bytes {
         if !s.is_human_readable() {
             serde::Serialize::serialize(bytes, s)
         } else {
-            s.serialize_str(&bytes.as_ref().to_hex())
+            s.serialize_str(&bytes.as_ref().to_lower_hex_string())
         }
     }
 
     pub fn deserialize<'de, D, B>(d: D) -> Result<B, D::Error>
-        where D: serde::Deserializer<'de>, B: serde::Deserialize<'de> + FromHex,
+        where D: serde::Deserializer<'de>, B: serde::Deserialize<'de> + From<Vec<u8>>,
     {
         struct Visitor<B>(::std::marker::PhantomData<B>);
 
-        impl<'de, B: FromHex> serde::de::Visitor<'de> for Visitor<B> {
+        impl<'de, B: From<Vec<u8>>> serde::de::Visitor<'de> for Visitor<B> {
             type Value = B;
 
             fn expecting(&self, formatter: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
@@ -251,8 +251,8 @@ pub mod hex_bytes {
             fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
                 where E: serde::de::Error,
             {
-                if let Ok(hex) = ::std::str::from_utf8(v) {
-                    FromHex::from_hex(hex).map_err(E::custom)
+                if let Ok(hex_str) = ::std::str::from_utf8(v) {
+                    hex::decode_to_vec(hex_str).map(B::from).map_err(E::custom)
                 } else {
                     return Err(E::invalid_value(serde::de::Unexpected::Bytes(v), &self));
                 }
@@ -261,7 +261,7 @@ pub mod hex_bytes {
             fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
                 where E: serde::de::Error,
             {
-                FromHex::from_hex(v).map_err(E::custom)
+                hex::decode_to_vec(v).map(B::from).map_err(E::custom)
             }
         }
 

@@ -23,19 +23,17 @@
 //! This module provides the structures and functions needed to support transactions.
 //!
 
-use std::default::Default;
 use std::{error, fmt, io, str};
 
-use hashes::{self, Hash, sha256d};
-use hashes::hex::FromHex;
+use crate::hashes::{self, sha256d};
 
-use util::endian;
-use blockdata::constants::WITNESS_SCALE_FACTOR;
-#[cfg(feature="bitcoinconsensus")] use blockdata::script;
-use blockdata::script::Script;
-use consensus::{encode, Decodable, Encodable};
-use hash_types::{SigHash, Txid, Wtxid};
-use VarInt;
+use crate::util::endian;
+use crate::blockdata::constants::WITNESS_SCALE_FACTOR;
+#[cfg(feature="bitcoinconsensus")] use crate::blockdata::script;
+use crate::blockdata::script::Script;
+use crate::consensus::{encode, Decodable, Encodable};
+use crate::hash_types::{SigHash, Txid, Wtxid};
+use crate::VarInt;
 
 /// A reference to a transaction output
 #[derive(Copy, Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
@@ -64,7 +62,7 @@ impl OutPoint {
     #[inline]
     pub fn null() -> OutPoint {
         OutPoint {
-            txid: Default::default(),
+            txid: Txid::from_byte_array([0u8; 32]),
             vout: u32::max_value(),
         }
     }
@@ -74,10 +72,10 @@ impl OutPoint {
     /// # Examples
     ///
     /// ```rust
-    /// use bitcoin::blockdata::constants::genesis_block;
-    /// use bitcoin::network::constants::Network;
+    /// use mwc_bitcoin::blockdata::constants::genesis_block;
+    /// use mwc_bitcoin::network::constants::Network;
     ///
-    /// let block = genesis_block(Network::Bitcoin);
+    /// let block = genesis_block(Network::Bitcoin).unwrap();
     /// let tx = &block.txdata[0];
     ///
     /// // Coinbase transactions don't have any previous output.
@@ -105,7 +103,7 @@ impl fmt::Display for OutPoint {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum ParseOutPointError {
     /// Error in TXID part.
-    Txid(hashes::hex::Error),
+    Txid(hashes::hex::DecodeFixedLengthBytesError),
     /// Error in vout part.
     Vout(::std::num::ParseIntError),
     /// Error in general format.
@@ -142,8 +140,7 @@ impl error::Error for ParseOutPointError {
 /// It does not permit leading zeroes or non-digit characters.
 fn parse_vout(s: &str) -> Result<u32, ParseOutPointError> {
     if s.len() > 1 {
-        let first = s.chars().next().unwrap();
-        if first == '0' || first == '+' {
+        if s.starts_with('0') || s.starts_with('+') {
             return Err(ParseOutPointError::VoutNotCanonical);
         }
     }
@@ -161,12 +158,15 @@ impl ::std::str::FromStr for OutPoint {
         if find == None || find != s.rfind(':') {
             return Err(ParseOutPointError::Format);
         }
-        let colon = find.unwrap();
+        let colon = match find {
+            Some(colon) => colon,
+            None => return Err(ParseOutPointError::Format),
+        };
         if colon == 0 || colon == s.len() - 1 {
             return Err(ParseOutPointError::Format);
         }
         Ok(OutPoint {
-            txid: Txid::from_hex(&s[..colon]).map_err(ParseOutPointError::Txid)?,
+            txid: Txid::from_str(&s[..colon]).map_err(ParseOutPointError::Txid)?,
             vout: parse_vout(&s[colon+1..])?,
         })
     }
@@ -270,36 +270,36 @@ impl Transaction {
     /// Computes a "normalized TXID" which does not include any signatures.
     /// This gives a way to identify a transaction that is "the same" as
     /// another in the sense of having same inputs and outputs.
-    pub fn ntxid(&self) -> sha256d::Hash {
+    pub fn ntxid(&self) -> Result<sha256d::Hash, encode::Error> {
         let cloned_tx = Transaction {
             version: self.version,
             lock_time: self.lock_time,
             input: self.input.iter().map(|txin| TxIn { script_sig: Script::new(), witness: vec![], .. *txin }).collect(),
             output: self.output.clone(),
         };
-        cloned_tx.txid().into()
+        Ok(sha256d::Hash::from_byte_array(cloned_tx.txid()?.to_byte_array()))
     }
 
     /// Computes the txid. For non-segwit transactions this will be identical
     /// to the output of `wtxid()`, but for segwit transactions,
     /// this will give the correct txid (not including witnesses) while `wtxid`
     /// will also hash witnesses.
-    pub fn txid(&self) -> Txid {
-        let mut enc = Txid::engine();
-        self.version.consensus_encode(&mut enc).unwrap();
-        self.input.consensus_encode(&mut enc).unwrap();
-        self.output.consensus_encode(&mut enc).unwrap();
-        self.lock_time.consensus_encode(&mut enc).unwrap();
-        Txid::from_engine(enc)
+    pub fn txid(&self) -> Result<Txid, encode::Error> {
+        let mut enc = sha256d::Hash::engine();
+        self.version.consensus_encode(&mut enc)?;
+        self.input.consensus_encode(&mut enc)?;
+        self.output.consensus_encode(&mut enc)?;
+        self.lock_time.consensus_encode(&mut enc)?;
+        Ok(Txid::from_byte_array(sha256d::Hash::from_engine(enc).to_byte_array()))
     }
 
     /// Computes SegWit-version of the transaction id (wtxid). For transaction with the witness
     /// data this hash includes witness, for pre-witness transaction it is equal to the normal
     /// value returned by txid() function.
-    pub fn wtxid(&self) -> Wtxid {
-        let mut enc = Wtxid::engine();
-        self.consensus_encode(&mut enc).unwrap();
-        Wtxid::from_engine(enc)
+    pub fn wtxid(&self) -> Result<Wtxid, encode::Error> {
+        let mut enc = sha256d::Hash::engine();
+        self.consensus_encode(&mut enc)?;
+        Ok(Wtxid::from_byte_array(sha256d::Hash::from_engine(enc).to_byte_array()))
     }
 
     /// Encodes the signing data from which a signature hash for a given input index with a given
@@ -315,7 +315,9 @@ impl Transaction {
     /// evaluating `script_pubkey` to determine which separators get evaluated and which don't,
     /// which we don't have the information to determine.
     ///
-    /// # Panics Panics if `input_index` is greater than or equal to `self.input.len()`
+    /// # Errors
+    ///
+    /// Returns an error if `input_index` is greater than or equal to `self.input.len()`.
     ///
     pub fn encode_signing_data_to<Write: io::Write, U: Into<u32>>(
         &self,
@@ -325,7 +327,12 @@ impl Transaction {
         sighash_type: U,
     ) -> Result<(), encode::Error> {
         let sighash_type : u32 = sighash_type.into();
-        assert!(input_index < self.input.len());  // Panic on OOB
+        if input_index >= self.input.len() {
+            return Err(encode::Error::SigningInputIndexOutOfBounds {
+                index: input_index,
+                len: self.input.len(),
+            });
+        }
 
         let (sighash, anyone_can_pay) = SigHashType::from_u32(sighash_type).split_anyonecanpay_flag();
 
@@ -375,7 +382,7 @@ impl Transaction {
                 output_iter.collect()
             }
             SigHashType::None => vec![],
-            _ => unreachable!()
+            _ => return Err(encode::Error::ParseFailed("invalid sighash type")),
         };
         // hash the result
         tx.consensus_encode(&mut writer)?;
@@ -394,19 +401,19 @@ impl Transaction {
     /// get evaluated and which don't, which we don't have the information to
     /// determine.
     ///
-    /// # Panics
-    /// Panics if `input_index` is greater than or equal to `self.input.len()`
+    /// # Errors
+    ///
+    /// Returns an error if `input_index` is greater than or equal to `self.input.len()`.
     ///
     pub fn signature_hash(
         &self,
         input_index: usize,
         script_pubkey: &Script,
         sighash_u32: u32
-    ) -> SigHash {
-        let mut engine = SigHash::engine();
-        self.encode_signing_data_to(&mut engine, input_index, script_pubkey, sighash_u32)
-            .expect("engines don't error");
-        SigHash::from_engine(engine)
+    ) -> Result<SigHash, encode::Error> {
+        let mut engine = sha256d::Hash::engine();
+        self.encode_signing_data_to(&mut engine, input_index, script_pubkey, sighash_u32)?;
+        Ok(SigHash::from_byte_array(sha256d::Hash::from_engine(engine).to_byte_array()))
     }
 
     /// Gets the "weight" of this transaction, as defined by BIP141. For transactions with an empty
@@ -414,51 +421,73 @@ impl Transaction {
     /// witness, this is the non-witness consensus-serialized size multiplied by 3 plus the
     /// with-witness consensus-serialized size.
     #[inline]
-    pub fn get_weight(&self) -> usize {
+    pub fn get_weight(&self) -> Result<usize, encode::Error> {
         self.get_scaled_size(WITNESS_SCALE_FACTOR)
     }
 
     /// Gets the regular byte-wise consensus-serialized size of this transaction.
     #[inline]
-    pub fn get_size(&self) -> usize {
+    pub fn get_size(&self) -> Result<usize, encode::Error> {
         self.get_scaled_size(1)
     }
 
     /// Internal utility function for get_{size,weight}
-    fn get_scaled_size(&self, scale_factor: usize) -> usize {
-        let mut input_weight = 0;
-        let mut inputs_with_witnesses = 0;
+    fn get_scaled_size(&self, scale_factor: usize) -> Result<usize, encode::Error> {
+        let mut input_weight: usize = 0;
+        let mut inputs_with_witnesses: usize = 0;
         for input in &self.input {
-            input_weight += scale_factor*(32 + 4 + 4 + // outpoint (32+4) + nSequence
-                VarInt(input.script_sig.len() as u64).len() +
-                input.script_sig.len());
+            let input_size = VarInt(input.script_sig.len() as u64).len()
+                .checked_add(input.script_sig.len())
+                .and_then(|size| (32 + 4 + 4usize).checked_add(size))
+                .ok_or(encode::Error::SizeCalculationOverflow)?;
+            input_weight = scale_factor.checked_mul(input_size)
+                .and_then(|size| input_weight.checked_add(size))
+                .ok_or(encode::Error::SizeCalculationOverflow)?;
             if !input.witness.is_empty() {
-                inputs_with_witnesses += 1;
-                input_weight += VarInt(input.witness.len() as u64).len();
+                inputs_with_witnesses = inputs_with_witnesses.checked_add(1)
+                    .ok_or(encode::Error::SizeCalculationOverflow)?;
+                let witness_len = input.witness.len() as u64;
+                input_weight = input_weight.checked_add(VarInt(witness_len).len())
+                    .ok_or(encode::Error::SizeCalculationOverflow)?;
                 for elem in &input.witness {
-                    input_weight += VarInt(elem.len() as u64).len() + elem.len();
+                    let elem_size = VarInt(elem.len() as u64).len()
+                        .checked_add(elem.len())
+                        .ok_or(encode::Error::SizeCalculationOverflow)?;
+                    input_weight = input_weight.checked_add(elem_size)
+                        .ok_or(encode::Error::SizeCalculationOverflow)?;
                 }
             }
         }
-        let mut output_size = 0;
+        let mut output_size: usize = 0;
         for output in &self.output {
-            output_size += 8 + // value
-                VarInt(output.script_pubkey.len() as u64).len() +
-                output.script_pubkey.len();
+            let output_entry_size = VarInt(output.script_pubkey.len() as u64).len()
+                .checked_add(output.script_pubkey.len())
+                .and_then(|size| 8usize.checked_add(size))
+                .ok_or(encode::Error::SizeCalculationOverflow)?;
+            output_size = output_size.checked_add(output_entry_size)
+                .ok_or(encode::Error::SizeCalculationOverflow)?;
         }
-        let non_input_size =
         // version:
-        4 +
+        let non_input_size = 4usize
         // count varints:
-        VarInt(self.input.len() as u64).len() +
-        VarInt(self.output.len() as u64).len() +
-        output_size +
+            .checked_add(VarInt(self.input.len() as u64).len())
+            .and_then(|size| size.checked_add(VarInt(self.output.len() as u64).len()))
+            .and_then(|size| size.checked_add(output_size))
         // lock_time
-        4;
+            .and_then(|size| size.checked_add(4))
+            .ok_or(encode::Error::SizeCalculationOverflow)?;
+        let size = non_input_size.checked_mul(scale_factor)
+            .and_then(|size| size.checked_add(input_weight))
+            .ok_or(encode::Error::SizeCalculationOverflow)?;
         if inputs_with_witnesses == 0 {
-            non_input_size * scale_factor + input_weight
+            Ok(size)
         } else {
-            non_input_size * scale_factor + input_weight + self.input.len() - inputs_with_witnesses + 2
+            let inputs_without_witnesses = self.input.len()
+                .checked_sub(inputs_with_witnesses)
+                .ok_or(encode::Error::SizeCalculationOverflow)?;
+            size.checked_add(inputs_without_witnesses)
+                .and_then(|size| size.checked_add(2))
+                .ok_or(encode::Error::SizeCalculationOverflow)
         }
     }
 
@@ -467,7 +496,7 @@ impl Transaction {
     /// The lambda spent should not return the same TxOut twice!
     pub fn verify<S>(&self, mut spent: S) -> Result<(), script::Error>
         where S: FnMut(&OutPoint) -> Option<TxOut> {
-        let tx = encode::serialize(&*self);
+        let tx = encode::serialize(&*self).map_err(|_| script::Error::SerializationError)?;
         for (idx, input) in self.input.iter().enumerate() {
             if let Some(output) = spent(&input.previous_output) {
                 output.script_pubkey.verify(idx, output.value, tx.as_slice())?;
@@ -492,7 +521,8 @@ impl Encodable for OutPoint {
         mut s: S,
     ) -> Result<usize, io::Error> {
         let len = self.txid.consensus_encode(&mut s)?;
-        Ok(len + self.vout.consensus_encode(s)?)
+        len.checked_add(self.vout.consensus_encode(s)?)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "encoded length overflow"))
     }
 }
 impl Decodable for OutPoint {
@@ -509,10 +539,13 @@ impl Encodable for TxIn {
         &self,
         mut s: S,
     ) -> Result<usize, io::Error> {
-        let mut len = 0;
-        len += self.previous_output.consensus_encode(&mut s)?;
-        len += self.script_sig.consensus_encode(&mut s)?;
-        len += self.sequence.consensus_encode(s)?;
+        let mut len: usize = 0;
+        len = len.checked_add(self.previous_output.consensus_encode(&mut s)?)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "encoded length overflow"))?;
+        len = len.checked_add(self.script_sig.consensus_encode(&mut s)?)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "encoded length overflow"))?;
+        len = len.checked_add(self.sequence.consensus_encode(s)?)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "encoded length overflow"))?;
         Ok(len)
     }
 }
@@ -532,8 +565,9 @@ impl Encodable for Transaction {
         &self,
         mut s: S,
     ) -> Result<usize, io::Error> {
-        let mut len = 0;
-        len += self.version.consensus_encode(&mut s)?;
+        let mut len: usize = 0;
+        len = len.checked_add(self.version.consensus_encode(&mut s)?)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "encoded length overflow"))?;
         let mut have_witness = self.input.is_empty();
         for input in &self.input {
             if !input.witness.is_empty() {
@@ -542,18 +576,26 @@ impl Encodable for Transaction {
             }
         }
         if !have_witness {
-            len += self.input.consensus_encode(&mut s)?;
-            len += self.output.consensus_encode(&mut s)?;
+            len = len.checked_add(self.input.consensus_encode(&mut s)?)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "encoded length overflow"))?;
+            len = len.checked_add(self.output.consensus_encode(&mut s)?)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "encoded length overflow"))?;
         } else {
-            len += 0u8.consensus_encode(&mut s)?;
-            len += 1u8.consensus_encode(&mut s)?;
-            len += self.input.consensus_encode(&mut s)?;
-            len += self.output.consensus_encode(&mut s)?;
+            len = len.checked_add(0u8.consensus_encode(&mut s)?)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "encoded length overflow"))?;
+            len = len.checked_add(1u8.consensus_encode(&mut s)?)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "encoded length overflow"))?;
+            len = len.checked_add(self.input.consensus_encode(&mut s)?)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "encoded length overflow"))?;
+            len = len.checked_add(self.output.consensus_encode(&mut s)?)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "encoded length overflow"))?;
             for input in &self.input {
-                len += input.witness.consensus_encode(&mut s)?;
+                len = len.checked_add(input.witness.consensus_encode(&mut s)?)
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "encoded length overflow"))?;
             }
         }
-        len += self.lock_time.consensus_encode(s)?;
+        len = len.checked_add(self.lock_time.consensus_encode(s)?)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "encoded length overflow"))?;
         Ok(len)
     }
 }
@@ -697,16 +739,15 @@ mod tests {
     use super::{OutPoint, ParseOutPointError, Transaction, TxIn};
 
     use std::str::FromStr;
-    use blockdata::constants::WITNESS_SCALE_FACTOR;
-    use blockdata::script::Script;
-    use consensus::encode::serialize;
-    use consensus::encode::deserialize;
+    use crate::blockdata::constants::WITNESS_SCALE_FACTOR;
+    use crate::blockdata::script::Script;
+    use crate::consensus::encode::serialize;
+    use crate::consensus::encode::deserialize;
 
-    use hashes::Hash;
-    use hashes::hex::FromHex;
+    use crate::hashes::hex;
 
-    use hash_types::*;
-    use SigHashType;
+    use crate::hash_types::*;
+    use crate::SigHashType;
 
     #[test]
     fn test_outpoint() {
@@ -723,27 +764,27 @@ mod tests {
         assert_eq!(OutPoint::from_str("5df6e0e2761359d30a8275058e299fcc0381534545f55cf43e41983f5d4c9456:+42"),
                    Err(ParseOutPointError::VoutNotCanonical));
         assert_eq!(OutPoint::from_str("i don't care:1"),
-                   Err(ParseOutPointError::Txid(Txid::from_hex("i don't care").unwrap_err())));
+                   Err(ParseOutPointError::Txid(<Txid as ::std::str::FromStr>::from_str("i don't care").unwrap_err())));
         assert_eq!(OutPoint::from_str("5df6e0e2761359d30a8275058e299fcc0381534545f55cf43e41983f5d4c945X:1"),
-                   Err(ParseOutPointError::Txid(Txid::from_hex("5df6e0e2761359d30a8275058e299fcc0381534545f55cf43e41983f5d4c945X").unwrap_err())));
+                   Err(ParseOutPointError::Txid(<Txid as ::std::str::FromStr>::from_str("5df6e0e2761359d30a8275058e299fcc0381534545f55cf43e41983f5d4c945X").unwrap_err())));
         assert_eq!(OutPoint::from_str("5df6e0e2761359d30a8275058e299fcc0381534545f55cf43e41983f5d4c9456:lol"),
                    Err(ParseOutPointError::Vout(u32::from_str("lol").unwrap_err())));
 
         assert_eq!(OutPoint::from_str("5df6e0e2761359d30a8275058e299fcc0381534545f55cf43e41983f5d4c9456:42"),
                    Ok(OutPoint{
-                       txid: Txid::from_hex("5df6e0e2761359d30a8275058e299fcc0381534545f55cf43e41983f5d4c9456").unwrap(),
+                       txid: <Txid as ::std::str::FromStr>::from_str("5df6e0e2761359d30a8275058e299fcc0381534545f55cf43e41983f5d4c9456").unwrap(),
                        vout: 42,
                    }));
         assert_eq!(OutPoint::from_str("5df6e0e2761359d30a8275058e299fcc0381534545f55cf43e41983f5d4c9456:0"),
                    Ok(OutPoint{
-                       txid: Txid::from_hex("5df6e0e2761359d30a8275058e299fcc0381534545f55cf43e41983f5d4c9456").unwrap(),
+                       txid: <Txid as ::std::str::FromStr>::from_str("5df6e0e2761359d30a8275058e299fcc0381534545f55cf43e41983f5d4c9456").unwrap(),
                        vout: 0,
                    }));
     }
 
     #[test]
     fn test_txin() {
-        let txin: Result<TxIn, _> = deserialize(&Vec::from_hex("a15d57094aa7a21a28cb20b59aab8fc7d1149a3bdbcddba9c622e4f5f6a99ece010000006c493046022100f93bb0e7d8db7bd46e40132d1f8242026e045f03a0efe71bbb8e3f475e970d790221009337cd7f1f929f00cc6ff01f03729b069a7c21b59b1736ddfee5db5946c5da8c0121033b9b137ee87d5a812d6f506efdd37f0affa7ffc310711c06c7f3e097c9447c52ffffffff").unwrap());
+        let txin: Result<TxIn, _> = deserialize(&hex::decode_to_vec("a15d57094aa7a21a28cb20b59aab8fc7d1149a3bdbcddba9c622e4f5f6a99ece010000006c493046022100f93bb0e7d8db7bd46e40132d1f8242026e045f03a0efe71bbb8e3f475e970d790221009337cd7f1f929f00cc6ff01f03729b069a7c21b59b1736ddfee5db5946c5da8c0121033b9b137ee87d5a812d6f506efdd37f0affa7ffc310711c06c7f3e097c9447c52ffffffff").unwrap());
         assert!(txin.is_ok());
     }
 
@@ -759,19 +800,19 @@ mod tests {
 
     #[test]
     fn test_is_coinbase () {
-        use network::constants::Network;
-        use blockdata::constants;
+        use crate::network::constants::Network;
+        use crate::blockdata::constants;
 
-        let genesis = constants::genesis_block(Network::Bitcoin);
+        let genesis = constants::genesis_block(Network::Bitcoin).unwrap();
         assert! (genesis.txdata[0].is_coin_base());
-        let tx_bytes = Vec::from_hex("0100000001a15d57094aa7a21a28cb20b59aab8fc7d1149a3bdbcddba9c622e4f5f6a99ece010000006c493046022100f93bb0e7d8db7bd46e40132d1f8242026e045f03a0efe71bbb8e3f475e970d790221009337cd7f1f929f00cc6ff01f03729b069a7c21b59b1736ddfee5db5946c5da8c0121033b9b137ee87d5a812d6f506efdd37f0affa7ffc310711c06c7f3e097c9447c52ffffffff0100e1f505000000001976a9140389035a9225b3839e2bbf32d826a1e222031fd888ac00000000").unwrap();
+        let tx_bytes = hex::decode_to_vec("0100000001a15d57094aa7a21a28cb20b59aab8fc7d1149a3bdbcddba9c622e4f5f6a99ece010000006c493046022100f93bb0e7d8db7bd46e40132d1f8242026e045f03a0efe71bbb8e3f475e970d790221009337cd7f1f929f00cc6ff01f03729b069a7c21b59b1736ddfee5db5946c5da8c0121033b9b137ee87d5a812d6f506efdd37f0affa7ffc310711c06c7f3e097c9447c52ffffffff0100e1f505000000001976a9140389035a9225b3839e2bbf32d826a1e222031fd888ac00000000").unwrap();
         let tx: Transaction = deserialize(&tx_bytes).unwrap();
         assert!(!tx.is_coin_base());
     }
 
     #[test]
     fn test_nonsegwit_transaction() {
-        let tx_bytes = Vec::from_hex("0100000001a15d57094aa7a21a28cb20b59aab8fc7d1149a3bdbcddba9c622e4f5f6a99ece010000006c493046022100f93bb0e7d8db7bd46e40132d1f8242026e045f03a0efe71bbb8e3f475e970d790221009337cd7f1f929f00cc6ff01f03729b069a7c21b59b1736ddfee5db5946c5da8c0121033b9b137ee87d5a812d6f506efdd37f0affa7ffc310711c06c7f3e097c9447c52ffffffff0100e1f505000000001976a9140389035a9225b3839e2bbf32d826a1e222031fd888ac00000000").unwrap();
+        let tx_bytes = hex::decode_to_vec("0100000001a15d57094aa7a21a28cb20b59aab8fc7d1149a3bdbcddba9c622e4f5f6a99ece010000006c493046022100f93bb0e7d8db7bd46e40132d1f8242026e045f03a0efe71bbb8e3f475e970d790221009337cd7f1f929f00cc6ff01f03729b069a7c21b59b1736ddfee5db5946c5da8c0121033b9b137ee87d5a812d6f506efdd37f0affa7ffc310711c06c7f3e097c9447c52ffffffff0100e1f505000000001976a9140389035a9225b3839e2bbf32d826a1e222031fd888ac00000000").unwrap();
         let tx: Result<Transaction, _> = deserialize(&tx_bytes);
         assert!(tx.is_ok());
         let realtx = tx.unwrap();
@@ -787,17 +828,17 @@ mod tests {
         assert_eq!(realtx.output.len(), 1);
         assert_eq!(realtx.lock_time, 0);
 
-        assert_eq!(format!("{:x}", realtx.txid()),
+        assert_eq!(format!("{:x}", realtx.txid().unwrap()),
                    "a6eab3c14ab5272a58a5ba91505ba1a4b6d7a3a9fcbd187b6cd99a7b6d548cb7".to_string());
-        assert_eq!(format!("{:x}", realtx.wtxid()),
+        assert_eq!(format!("{:x}", realtx.wtxid().unwrap()),
                    "a6eab3c14ab5272a58a5ba91505ba1a4b6d7a3a9fcbd187b6cd99a7b6d548cb7".to_string());
-        assert_eq!(realtx.get_weight(), tx_bytes.len()*WITNESS_SCALE_FACTOR);
-        assert_eq!(realtx.get_size(), tx_bytes.len());
+        assert_eq!(realtx.get_weight().unwrap(), tx_bytes.len()*WITNESS_SCALE_FACTOR);
+        assert_eq!(realtx.get_size().unwrap(), tx_bytes.len());
     }
 
     #[test]
     fn test_segwit_transaction() {
-        let tx_bytes = Vec::from_hex(
+        let tx_bytes = hex::decode_to_vec(
             "02000000000101595895ea20179de87052b4046dfe6fd515860505d6511a9004cf12a1f93cac7c01000000\
             00ffffffff01deb807000000000017a9140f3444e271620c736808aa7b33e370bd87cb5a078702483045022\
             100fb60dad8df4af2841adc0346638c16d0b8035f5e3f3753b88db122e70c79f9370220756e6633b17fd271\
@@ -819,23 +860,23 @@ mod tests {
         assert_eq!(realtx.output.len(), 1);
         assert_eq!(realtx.lock_time, 0);
 
-        assert_eq!(format!("{:x}", realtx.txid()),
+        assert_eq!(format!("{:x}", realtx.txid().unwrap()),
                    "f5864806e3565c34d1b41e716f72609d00b55ea5eac5b924c9719a842ef42206".to_string());
-        assert_eq!(format!("{:x}", realtx.wtxid()),
+        assert_eq!(format!("{:x}", realtx.wtxid().unwrap()),
                    "80b7d8a82d5d5bf92905b06f2014dd699e03837ca172e3a59d51426ebbe3e7f5".to_string());
-        assert_eq!(realtx.get_weight(), 442);
-        assert_eq!(realtx.get_size(), tx_bytes.len());
+        assert_eq!(realtx.get_weight().unwrap(), 442);
+        assert_eq!(realtx.get_size().unwrap(), tx_bytes.len());
     }
 
     #[test]
     fn test_transaction_version() {
-        let tx_bytes = Vec::from_hex("ffffff7f0100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff0100f2052a01000000434104678afdb0fe5548271967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38c4f35504e51ec112de5c384df7ba0b8d578a4c702b6bf11d5fac00000000").unwrap();
+        let tx_bytes = hex::decode_to_vec("ffffff7f0100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff0100f2052a01000000434104678afdb0fe5548271967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38c4f35504e51ec112de5c384df7ba0b8d578a4c702b6bf11d5fac00000000").unwrap();
         let tx: Result<Transaction, _> = deserialize(&tx_bytes);
         assert!(tx.is_ok());
         let realtx = tx.unwrap();
         assert_eq!(realtx.version, 2147483647);
 
-        let tx2_bytes = Vec::from_hex("000000800100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff0100f2052a01000000434104678afdb0fe5548271967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38c4f35504e51ec112de5c384df7ba0b8d578a4c702b6bf11d5fac00000000").unwrap();
+        let tx2_bytes = hex::decode_to_vec("000000800100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff0100f2052a01000000434104678afdb0fe5548271967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38c4f35504e51ec112de5c384df7ba0b8d578a4c702b6bf11d5fac00000000").unwrap();
         let tx2: Result<Transaction, _> = deserialize(&tx2_bytes);
         assert!(tx2.is_ok());
         let realtx2 = tx2.unwrap();
@@ -844,7 +885,7 @@ mod tests {
 
     #[test]
     fn tx_no_input_deserialization() {
-        let tx_bytes = Vec::from_hex(
+        let tx_bytes = hex::decode_to_vec(
             "010000000001000100e1f505000000001976a9140389035a9225b3839e2bbf32d826a1e222031fd888ac00000000"
         ).unwrap();
         let tx: Transaction = deserialize(&tx_bytes).expect("deserialize tx");
@@ -852,29 +893,29 @@ mod tests {
         assert_eq!(tx.input.len(), 0);
         assert_eq!(tx.output.len(), 1);
 
-        let reser = serialize(&tx);
+        let reser = serialize(&tx).unwrap();
         assert_eq!(tx_bytes, reser);
     }
 
     #[test]
     fn test_ntxid() {
-        let tx_bytes = Vec::from_hex("0100000001a15d57094aa7a21a28cb20b59aab8fc7d1149a3bdbcddba9c622e4f5f6a99ece010000006c493046022100f93bb0e7d8db7bd46e40132d1f8242026e045f03a0efe71bbb8e3f475e970d790221009337cd7f1f929f00cc6ff01f03729b069a7c21b59b1736ddfee5db5946c5da8c0121033b9b137ee87d5a812d6f506efdd37f0affa7ffc310711c06c7f3e097c9447c52ffffffff0100e1f505000000001976a9140389035a9225b3839e2bbf32d826a1e222031fd888ac00000000").unwrap();
+        let tx_bytes = hex::decode_to_vec("0100000001a15d57094aa7a21a28cb20b59aab8fc7d1149a3bdbcddba9c622e4f5f6a99ece010000006c493046022100f93bb0e7d8db7bd46e40132d1f8242026e045f03a0efe71bbb8e3f475e970d790221009337cd7f1f929f00cc6ff01f03729b069a7c21b59b1736ddfee5db5946c5da8c0121033b9b137ee87d5a812d6f506efdd37f0affa7ffc310711c06c7f3e097c9447c52ffffffff0100e1f505000000001976a9140389035a9225b3839e2bbf32d826a1e222031fd888ac00000000").unwrap();
         let mut tx: Transaction = deserialize(&tx_bytes).unwrap();
 
-        let old_ntxid = tx.ntxid();
+        let old_ntxid = tx.ntxid().unwrap();
         assert_eq!(format!("{:x}", old_ntxid), "c3573dbea28ce24425c59a189391937e00d255150fa973d59d61caf3a06b601d");
         // changing sigs does not affect it
         tx.input[0].script_sig = Script::new();
-        assert_eq!(old_ntxid, tx.ntxid());
+        assert_eq!(old_ntxid, tx.ntxid().unwrap());
         // changing pks does
         tx.output[0].script_pubkey = Script::new();
-        assert!(old_ntxid != tx.ntxid());
+        assert!(old_ntxid != tx.ntxid().unwrap());
     }
 
     #[test]
     fn test_txid() {
         // segwit tx from Liquid integration tests, txid/hash from Core decoderawtransaction
-        let tx_bytes = Vec::from_hex(
+        let tx_bytes = hex::decode_to_vec(
             "01000000000102ff34f95a672bb6a4f6ff4a7e90fa8c7b3be7e70ffc39bc99be3bda67942e836c00000000\
              23220020cde476664d3fa347b8d54ef3aee33dcb686a65ced2b5207cbf4ec5eda6b9b46e4f414d4c934ad8\
              1d330314e888888e3bd22c7dde8aac2ca9227b30d7c40093248af7812201000000232200200af6f6a071a6\
@@ -906,12 +947,12 @@ mod tests {
         ).unwrap();
         let tx: Transaction = deserialize(&tx_bytes).unwrap();
 
-        assert_eq!(format!("{:x}", tx.wtxid()), "d6ac4a5e61657c4c604dcde855a1db74ec6b3e54f32695d72c5e11c7761ea1b4");
-        assert_eq!(format!("{:x}", tx.txid()), "9652aa62b0e748caeec40c4cb7bc17c6792435cc3dfe447dd1ca24f912a1c6ec");
-        assert_eq!(tx.get_weight(), 2718);
+        assert_eq!(format!("{:x}", tx.wtxid().unwrap()), "d6ac4a5e61657c4c604dcde855a1db74ec6b3e54f32695d72c5e11c7761ea1b4");
+        assert_eq!(format!("{:x}", tx.txid().unwrap()), "9652aa62b0e748caeec40c4cb7bc17c6792435cc3dfe447dd1ca24f912a1c6ec");
+        assert_eq!(tx.get_weight().unwrap(), 2718);
 
         // non-segwit tx from my mempool
-        let tx_bytes = Vec::from_hex(
+        let tx_bytes = hex::decode_to_vec(
             "01000000010c7196428403d8b0c88fcb3ee8d64f56f55c8973c9ab7dd106bb4f3527f5888d000000006a47\
              30440220503a696f55f2c00eee2ac5e65b17767cd88ed04866b5637d3c1d5d996a70656d02202c9aff698f\
              343abb6d176704beda63fcdec503133ea4f6a5216b7f925fa9910c0121024d89b5a13d6521388969209df2\
@@ -921,26 +962,24 @@ mod tests {
         ).unwrap();
         let tx: Transaction = deserialize(&tx_bytes).unwrap();
 
-        assert_eq!(format!("{:x}", tx.wtxid()), "971ed48a62c143bbd9c87f4bafa2ef213cfa106c6e140f111931d0be307468dd");
-        assert_eq!(format!("{:x}", tx.txid()), "971ed48a62c143bbd9c87f4bafa2ef213cfa106c6e140f111931d0be307468dd");
+        assert_eq!(format!("{:x}", tx.wtxid().unwrap()), "971ed48a62c143bbd9c87f4bafa2ef213cfa106c6e140f111931d0be307468dd");
+        assert_eq!(format!("{:x}", tx.txid().unwrap()), "971ed48a62c143bbd9c87f4bafa2ef213cfa106c6e140f111931d0be307468dd");
     }
 
     #[test]
     #[cfg(feature = "serde")]
     fn test_txn_encode_decode() {
-        let tx_bytes = Vec::from_hex("0100000001a15d57094aa7a21a28cb20b59aab8fc7d1149a3bdbcddba9c622e4f5f6a99ece010000006c493046022100f93bb0e7d8db7bd46e40132d1f8242026e045f03a0efe71bbb8e3f475e970d790221009337cd7f1f929f00cc6ff01f03729b069a7c21b59b1736ddfee5db5946c5da8c0121033b9b137ee87d5a812d6f506efdd37f0affa7ffc310711c06c7f3e097c9447c52ffffffff0100e1f505000000001976a9140389035a9225b3839e2bbf32d826a1e222031fd888ac00000000").unwrap();
+        let tx_bytes = hex::decode_to_vec("0100000001a15d57094aa7a21a28cb20b59aab8fc7d1149a3bdbcddba9c622e4f5f6a99ece010000006c493046022100f93bb0e7d8db7bd46e40132d1f8242026e045f03a0efe71bbb8e3f475e970d790221009337cd7f1f929f00cc6ff01f03729b069a7c21b59b1736ddfee5db5946c5da8c0121033b9b137ee87d5a812d6f506efdd37f0affa7ffc310711c06c7f3e097c9447c52ffffffff0100e1f505000000001976a9140389035a9225b3839e2bbf32d826a1e222031fd888ac00000000").unwrap();
         let tx: Transaction = deserialize(&tx_bytes).unwrap();
         serde_round_trip!(tx);
     }
 
     fn run_test_sighash(tx: &str, script: &str, input_index: usize, hash_type: i32, expected_result: &str) {
-        let tx: Transaction = deserialize(&Vec::from_hex(tx).unwrap()[..]).unwrap();
-        let script = Script::from(Vec::from_hex(script).unwrap());
-        let mut raw_expected = Vec::from_hex(expected_result).unwrap();
-        raw_expected.reverse();
-        let expected_result = SigHash::from_slice(&raw_expected[..]).unwrap();
+        let tx: Transaction = deserialize(&hex::decode_to_vec(tx).unwrap()[..]).unwrap();
+        let script = Script::from(hex::decode_to_vec(script).unwrap());
+        let expected_result = SigHash::from_str(expected_result).unwrap();
 
-        let actual_result = tx.signature_hash(input_index, &script, hash_type as u32);
+        let actual_result = tx.signature_hash(input_index, &script, hash_type as u32).unwrap();
         assert_eq!(actual_result, expected_result);
     }
 
@@ -949,12 +988,12 @@ mod tests {
     #[test]
     #[cfg(feature = "serde")]
     fn test_segwit_tx_decode() {
-        let tx_bytes = Vec::from_hex("010000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff3603da1b0e00045503bd5704c7dd8a0d0ced13bb5785010800000000000a636b706f6f6c122f4e696e6a61506f6f6c2f5345475749542fffffffff02b4e5a212000000001976a914876fbb82ec05caa6af7a3b5e5a983aae6c6cc6d688ac0000000000000000266a24aa21a9edf91c46b49eb8a29089980f02ee6b57e7d63d33b18b4fddac2bcd7db2a39837040120000000000000000000000000000000000000000000000000000000000000000000000000").unwrap();
+        let tx_bytes = hex::decode_to_vec("010000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff3603da1b0e00045503bd5704c7dd8a0d0ced13bb5785010800000000000a636b706f6f6c122f4e696e6a61506f6f6c2f5345475749542fffffffff02b4e5a212000000001976a914876fbb82ec05caa6af7a3b5e5a983aae6c6cc6d688ac0000000000000000266a24aa21a9edf91c46b49eb8a29089980f02ee6b57e7d63d33b18b4fddac2bcd7db2a39837040120000000000000000000000000000000000000000000000000000000000000000000000000").unwrap();
         let tx: Transaction = deserialize(&tx_bytes).unwrap();
-        assert_eq!(tx.get_weight(), 780);
+        assert_eq!(tx.get_weight().unwrap(), 780);
         serde_round_trip!(tx);
 
-        let consensus_encoded = serialize(&tx);
+        let consensus_encoded = serialize(&tx).unwrap();
         assert_eq!(consensus_encoded, tx_bytes);
     }
 
@@ -1286,23 +1325,23 @@ mod tests {
     #[test]
     #[cfg(feature="bitcoinconsensus")]
     fn test_transaction_verify () {
-        use hashes::hex::FromHex;
+        use crate::hashes::hex;
         use std::collections::HashMap;
-        use blockdata::script;
+        use crate::blockdata::script;
         // a random recent segwit transaction from blockchain using both old and segwit inputs
-        let mut spending: Transaction = deserialize(Vec::from_hex("020000000001031cfbc8f54fbfa4a33a30068841371f80dbfe166211242213188428f437445c91000000006a47304402206fbcec8d2d2e740d824d3d36cc345b37d9f65d665a99f5bd5c9e8d42270a03a8022013959632492332200c2908459547bf8dbf97c65ab1a28dec377d6f1d41d3d63e012103d7279dfb90ce17fe139ba60a7c41ddf605b25e1c07a4ddcb9dfef4e7d6710f48feffffff476222484f5e35b3f0e43f65fc76e21d8be7818dd6a989c160b1e5039b7835fc00000000171600140914414d3c94af70ac7e25407b0689e0baa10c77feffffffa83d954a62568bbc99cc644c62eb7383d7c2a2563041a0aeb891a6a4055895570000000017160014795d04cc2d4f31480d9a3710993fbd80d04301dffeffffff06fef72f000000000017a91476fd7035cd26f1a32a5ab979e056713aac25796887a5000f00000000001976a914b8332d502a529571c6af4be66399cd33379071c588ac3fda0500000000001976a914fc1d692f8de10ae33295f090bea5fe49527d975c88ac522e1b00000000001976a914808406b54d1044c429ac54c0e189b0d8061667e088ac6eb68501000000001976a914dfab6085f3a8fb3e6710206a5a959313c5618f4d88acbba20000000000001976a914eb3026552d7e3f3073457d0bee5d4757de48160d88ac0002483045022100bee24b63212939d33d513e767bc79300051f7a0d433c3fcf1e0e3bf03b9eb1d70220588dc45a9ce3a939103b4459ce47500b64e23ab118dfc03c9caa7d6bfc32b9c601210354fd80328da0f9ae6eef2b3a81f74f9a6f66761fadf96f1d1d22b1fd6845876402483045022100e29c7e3a5efc10da6269e5fc20b6a1cb8beb92130cc52c67e46ef40aaa5cac5f0220644dd1b049727d991aece98a105563416e10a5ac4221abac7d16931842d5c322012103960b87412d6e169f30e12106bdf70122aabb9eb61f455518322a18b920a4dfa887d30700")
+        let mut spending: Transaction = deserialize(hex::decode_to_vec("020000000001031cfbc8f54fbfa4a33a30068841371f80dbfe166211242213188428f437445c91000000006a47304402206fbcec8d2d2e740d824d3d36cc345b37d9f65d665a99f5bd5c9e8d42270a03a8022013959632492332200c2908459547bf8dbf97c65ab1a28dec377d6f1d41d3d63e012103d7279dfb90ce17fe139ba60a7c41ddf605b25e1c07a4ddcb9dfef4e7d6710f48feffffff476222484f5e35b3f0e43f65fc76e21d8be7818dd6a989c160b1e5039b7835fc00000000171600140914414d3c94af70ac7e25407b0689e0baa10c77feffffffa83d954a62568bbc99cc644c62eb7383d7c2a2563041a0aeb891a6a4055895570000000017160014795d04cc2d4f31480d9a3710993fbd80d04301dffeffffff06fef72f000000000017a91476fd7035cd26f1a32a5ab979e056713aac25796887a5000f00000000001976a914b8332d502a529571c6af4be66399cd33379071c588ac3fda0500000000001976a914fc1d692f8de10ae33295f090bea5fe49527d975c88ac522e1b00000000001976a914808406b54d1044c429ac54c0e189b0d8061667e088ac6eb68501000000001976a914dfab6085f3a8fb3e6710206a5a959313c5618f4d88acbba20000000000001976a914eb3026552d7e3f3073457d0bee5d4757de48160d88ac0002483045022100bee24b63212939d33d513e767bc79300051f7a0d433c3fcf1e0e3bf03b9eb1d70220588dc45a9ce3a939103b4459ce47500b64e23ab118dfc03c9caa7d6bfc32b9c601210354fd80328da0f9ae6eef2b3a81f74f9a6f66761fadf96f1d1d22b1fd6845876402483045022100e29c7e3a5efc10da6269e5fc20b6a1cb8beb92130cc52c67e46ef40aaa5cac5f0220644dd1b049727d991aece98a105563416e10a5ac4221abac7d16931842d5c322012103960b87412d6e169f30e12106bdf70122aabb9eb61f455518322a18b920a4dfa887d30700")
             .unwrap().as_slice()).unwrap();
-        let spent1: Transaction = deserialize(Vec::from_hex("020000000001040aacd2c49f5f3c0968cfa8caf9d5761436d95385252e3abb4de8f5dcf8a582f20000000017160014bcadb2baea98af0d9a902e53a7e9adff43b191e9feffffff96cd3c93cac3db114aafe753122bd7d1afa5aa4155ae04b3256344ecca69d72001000000171600141d9984579ceb5c67ebfbfb47124f056662fe7adbfeffffffc878dd74d3a44072eae6178bb94b9253177db1a5aaa6d068eb0e4db7631762e20000000017160014df2a48cdc53dae1aba7aa71cb1f9de089d75aac3feffffffe49f99275bc8363f5f593f4eec371c51f62c34ff11cc6d8d778787d340d6896c0100000017160014229b3b297a0587e03375ab4174ef56eeb0968735feffffff03360d0f00000000001976a9149f44b06f6ee92ddbc4686f71afe528c09727a5c788ac24281b00000000001976a9140277b4f68ff20307a2a9f9b4487a38b501eb955888ac227c0000000000001976a9148020cd422f55eef8747a9d418f5441030f7c9c7788ac0247304402204aa3bd9682f9a8e101505f6358aacd1749ecf53a62b8370b97d59243b3d6984f02200384ad449870b0e6e89c92505880411285ecd41cf11e7439b973f13bad97e53901210205b392ffcb83124b1c7ce6dd594688198ef600d34500a7f3552d67947bbe392802473044022033dfd8d190a4ae36b9f60999b217c775b96eb10dee3a1ff50fb6a75325719106022005872e4e36d194e49ced2ebcf8bb9d843d842e7b7e0eb042f4028396088d292f012103c9d7cbf369410b090480de2aa15c6c73d91b9ffa7d88b90724614b70be41e98e0247304402207d952de9e59e4684efed069797e3e2d993e9f98ec8a9ccd599de43005fe3f713022076d190cc93d9513fc061b1ba565afac574e02027c9efbfa1d7b71ab8dbb21e0501210313ad44bc030cc6cb111798c2bf3d2139418d751c1e79ec4e837ce360cc03b97a024730440220029e75edb5e9413eb98d684d62a077b17fa5b7cc19349c1e8cc6c4733b7b7452022048d4b9cae594f03741029ff841e35996ef233701c1ea9aa55c301362ea2e2f68012103590657108a72feb8dc1dec022cf6a230bb23dc7aaa52f4032384853b9f8388baf9d20700")
+        let spent1: Transaction = deserialize(hex::decode_to_vec("020000000001040aacd2c49f5f3c0968cfa8caf9d5761436d95385252e3abb4de8f5dcf8a582f20000000017160014bcadb2baea98af0d9a902e53a7e9adff43b191e9feffffff96cd3c93cac3db114aafe753122bd7d1afa5aa4155ae04b3256344ecca69d72001000000171600141d9984579ceb5c67ebfbfb47124f056662fe7adbfeffffffc878dd74d3a44072eae6178bb94b9253177db1a5aaa6d068eb0e4db7631762e20000000017160014df2a48cdc53dae1aba7aa71cb1f9de089d75aac3feffffffe49f99275bc8363f5f593f4eec371c51f62c34ff11cc6d8d778787d340d6896c0100000017160014229b3b297a0587e03375ab4174ef56eeb0968735feffffff03360d0f00000000001976a9149f44b06f6ee92ddbc4686f71afe528c09727a5c788ac24281b00000000001976a9140277b4f68ff20307a2a9f9b4487a38b501eb955888ac227c0000000000001976a9148020cd422f55eef8747a9d418f5441030f7c9c7788ac0247304402204aa3bd9682f9a8e101505f6358aacd1749ecf53a62b8370b97d59243b3d6984f02200384ad449870b0e6e89c92505880411285ecd41cf11e7439b973f13bad97e53901210205b392ffcb83124b1c7ce6dd594688198ef600d34500a7f3552d67947bbe392802473044022033dfd8d190a4ae36b9f60999b217c775b96eb10dee3a1ff50fb6a75325719106022005872e4e36d194e49ced2ebcf8bb9d843d842e7b7e0eb042f4028396088d292f012103c9d7cbf369410b090480de2aa15c6c73d91b9ffa7d88b90724614b70be41e98e0247304402207d952de9e59e4684efed069797e3e2d993e9f98ec8a9ccd599de43005fe3f713022076d190cc93d9513fc061b1ba565afac574e02027c9efbfa1d7b71ab8dbb21e0501210313ad44bc030cc6cb111798c2bf3d2139418d751c1e79ec4e837ce360cc03b97a024730440220029e75edb5e9413eb98d684d62a077b17fa5b7cc19349c1e8cc6c4733b7b7452022048d4b9cae594f03741029ff841e35996ef233701c1ea9aa55c301362ea2e2f68012103590657108a72feb8dc1dec022cf6a230bb23dc7aaa52f4032384853b9f8388baf9d20700")
             .unwrap().as_slice()).unwrap();
-        let spent2: Transaction = deserialize(Vec::from_hex("0200000000010166c3d39490dc827a2594c7b17b7d37445e1f4b372179649cd2ce4475e3641bbb0100000017160014e69aa750e9bff1aca1e32e57328b641b611fc817fdffffff01e87c5d010000000017a914f3890da1b99e44cd3d52f7bcea6a1351658ea7be87024830450221009eb97597953dc288de30060ba02d4e91b2bde1af2ecf679c7f5ab5989549aa8002202a98f8c3bd1a5a31c0d72950dd6e2e3870c6c5819a6c3db740e91ebbbc5ef4800121023f3d3b8e74b807e32217dea2c75c8d0bd46b8665b3a2d9b3cb310959de52a09bc9d20700")
+        let spent2: Transaction = deserialize(hex::decode_to_vec("0200000000010166c3d39490dc827a2594c7b17b7d37445e1f4b372179649cd2ce4475e3641bbb0100000017160014e69aa750e9bff1aca1e32e57328b641b611fc817fdffffff01e87c5d010000000017a914f3890da1b99e44cd3d52f7bcea6a1351658ea7be87024830450221009eb97597953dc288de30060ba02d4e91b2bde1af2ecf679c7f5ab5989549aa8002202a98f8c3bd1a5a31c0d72950dd6e2e3870c6c5819a6c3db740e91ebbbc5ef4800121023f3d3b8e74b807e32217dea2c75c8d0bd46b8665b3a2d9b3cb310959de52a09bc9d20700")
             .unwrap().as_slice()).unwrap();
-        let spent3: Transaction = deserialize(Vec::from_hex("01000000027a1120a30cef95422638e8dab9dedf720ec614b1b21e451a4957a5969afb869d000000006a47304402200ecc318a829a6cad4aa9db152adbf09b0cd2de36f47b53f5dade3bc7ef086ca702205722cda7404edd6012eedd79b2d6f24c0a0c657df1a442d0a2166614fb164a4701210372f4b97b34e9c408741cd1fc97bcc7ffdda6941213ccfde1cb4075c0f17aab06ffffffffc23b43e5a18e5a66087c0d5e64d58e8e21fcf83ce3f5e4f7ecb902b0e80a7fb6010000006b483045022100f10076a0ea4b4cf8816ed27a1065883efca230933bf2ff81d5db6258691ff75202206b001ef87624e76244377f57f0c84bc5127d0dd3f6e0ef28b276f176badb223a01210309a3a61776afd39de4ed29b622cd399d99ecd942909c36a8696cfd22fc5b5a1affffffff0200127a000000000017a914f895e1dd9b29cb228e9b06a15204e3b57feaf7cc8769311d09000000001976a9144d00da12aaa51849d2583ae64525d4a06cd70fde88ac00000000")
+        let spent3: Transaction = deserialize(hex::decode_to_vec("01000000027a1120a30cef95422638e8dab9dedf720ec614b1b21e451a4957a5969afb869d000000006a47304402200ecc318a829a6cad4aa9db152adbf09b0cd2de36f47b53f5dade3bc7ef086ca702205722cda7404edd6012eedd79b2d6f24c0a0c657df1a442d0a2166614fb164a4701210372f4b97b34e9c408741cd1fc97bcc7ffdda6941213ccfde1cb4075c0f17aab06ffffffffc23b43e5a18e5a66087c0d5e64d58e8e21fcf83ce3f5e4f7ecb902b0e80a7fb6010000006b483045022100f10076a0ea4b4cf8816ed27a1065883efca230933bf2ff81d5db6258691ff75202206b001ef87624e76244377f57f0c84bc5127d0dd3f6e0ef28b276f176badb223a01210309a3a61776afd39de4ed29b622cd399d99ecd942909c36a8696cfd22fc5b5a1affffffff0200127a000000000017a914f895e1dd9b29cb228e9b06a15204e3b57feaf7cc8769311d09000000001976a9144d00da12aaa51849d2583ae64525d4a06cd70fde88ac00000000")
             .unwrap().as_slice()).unwrap();
 
         let mut spent = HashMap::new();
-        spent.insert(spent1.txid(), spent1);
-        spent.insert(spent2.txid(), spent2);
-        spent.insert(spent3.txid(), spent3);
+        spent.insert(spent1.txid().unwrap(), spent1);
+        spent.insert(spent2.txid().unwrap(), spent2);
+        spent.insert(spent3.txid().unwrap(), spent3);
         let mut spent2 = spent.clone();
         let mut spent3 = spent.clone();
 
@@ -1343,26 +1382,26 @@ mod tests {
 mod benches {
     use super::Transaction;
     use EmptyWrite;
-    use consensus::{deserialize, Encodable};
-    use hashes::hex::FromHex;
+    use crate::consensus::{deserialize, Encodable};
+    use crate::hashes::hex;
     use test::{black_box, Bencher};
 
     const SOME_TX: &'static str = "0100000001a15d57094aa7a21a28cb20b59aab8fc7d1149a3bdbcddba9c622e4f5f6a99ece010000006c493046022100f93bb0e7d8db7bd46e40132d1f8242026e045f03a0efe71bbb8e3f475e970d790221009337cd7f1f929f00cc6ff01f03729b069a7c21b59b1736ddfee5db5946c5da8c0121033b9b137ee87d5a812d6f506efdd37f0affa7ffc310711c06c7f3e097c9447c52ffffffff0100e1f505000000001976a9140389035a9225b3839e2bbf32d826a1e222031fd888ac00000000";
 
     #[bench]
     pub fn bench_transaction_get_size(bh: &mut Bencher) {
-        let raw_tx = Vec::from_hex(SOME_TX).unwrap();
+        let raw_tx = hex::decode_to_vec(SOME_TX).unwrap();
 
         let mut tx: Transaction = deserialize(&raw_tx).unwrap();
 
         bh.iter(|| {
-            black_box(black_box(&mut tx).get_size());
+            black_box(black_box(&mut tx).get_size().unwrap());
         });
     }
 
     #[bench]
     pub fn bench_transaction_serialize(bh: &mut Bencher) {
-        let raw_tx = Vec::from_hex(SOME_TX).unwrap();
+        let raw_tx = hex::decode_to_vec(SOME_TX).unwrap();
         let tx: Transaction = deserialize(&raw_tx).unwrap();
 
         let mut data = Vec::with_capacity(raw_tx.len());
@@ -1376,7 +1415,7 @@ mod benches {
 
     #[bench]
     pub fn bench_transaction_serialize_logic(bh: &mut Bencher) {
-        let raw_tx = Vec::from_hex(SOME_TX).unwrap();
+        let raw_tx = hex::decode_to_vec(SOME_TX).unwrap();
         let tx: Transaction = deserialize(&raw_tx).unwrap();
 
         bh.iter(|| {
@@ -1387,7 +1426,7 @@ mod benches {
 
     #[bench]
     pub fn bench_transaction_deserialize(bh: &mut Bencher) {
-        let raw_tx = Vec::from_hex(SOME_TX).unwrap();
+        let raw_tx = hex::decode_to_vec(SOME_TX).unwrap();
 
         bh.iter(|| {
             let tx: Transaction = deserialize(&raw_tx).unwrap();

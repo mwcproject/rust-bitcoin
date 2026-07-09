@@ -14,7 +14,12 @@
 
 #[allow(unused_macros)]
 macro_rules! hex_psbt {
-    ($s:expr) => { $crate::consensus::deserialize(&<Vec<u8> as $crate::hashes::hex::FromHex>::from_hex($s).unwrap()) };
+    ($s:expr) => {
+        match $crate::hashes::hex::decode_to_vec($s) {
+            Ok(bytes) => $crate::consensus::deserialize(&bytes),
+            Err(_) => Err($crate::consensus::encode::Error::ParseFailed("invalid hex")),
+        }
+    };
 }
 
 macro_rules! merge {
@@ -45,8 +50,9 @@ macro_rules! impl_psbt_deserialize {
 macro_rules! impl_psbt_serialize {
     ($thing:ty) => {
         impl $crate::util::psbt::serialize::Serialize for $thing {
-            fn serialize(&self) -> Vec<u8> {
+            fn serialize(&self) -> ::std::io::Result<Vec<u8>> {
                 $crate::consensus::serialize(self)
+                    .map_err(|e| ::std::io::Error::new(::std::io::ErrorKind::InvalidData, e))
             }
         }
     };
@@ -59,15 +65,25 @@ macro_rules! impl_psbtmap_consensus_encoding {
                 &self,
                 mut s: S,
             ) -> Result<usize, ::std::io::Error> {
-                let mut len = 0;
+                let mut len: usize = 0;
                 for pair in $crate::util::psbt::Map::get_pairs(self)? {
-                    len += $crate::consensus::Encodable::consensus_encode(
-                        &pair,
-                        &mut s,
-                    )?;
+                    len = len.checked_add(
+                        $crate::consensus::Encodable::consensus_encode(&pair, &mut s)?,
+                    ).ok_or_else(|| {
+                        ::std::io::Error::new(
+                            ::std::io::ErrorKind::InvalidData,
+                            "encoded length overflow",
+                        )
+                    })?;
                 }
 
-                Ok(len + $crate::consensus::Encodable::consensus_encode(&0x00_u8, s)?)
+                len.checked_add($crate::consensus::Encodable::consensus_encode(&0x00_u8, s)?)
+                    .ok_or_else(|| {
+                        ::std::io::Error::new(
+                            ::std::io::ErrorKind::InvalidData,
+                            "encoded length overflow",
+                        )
+                    })
             }
         }
     };
@@ -140,7 +156,7 @@ macro_rules! impl_psbt_get_pair {
                     type_value: $unkeyed_typeval,
                     key: vec![],
                 },
-                value: $crate::util::psbt::serialize::Serialize::serialize($unkeyed_name),
+                value: $crate::util::psbt::serialize::Serialize::serialize($unkeyed_name)?,
             });
         }
     };
@@ -149,9 +165,9 @@ macro_rules! impl_psbt_get_pair {
             $rv.push($crate::util::psbt::raw::Pair {
                 key: $crate::util::psbt::raw::Key {
                     type_value: $keyed_typeval,
-                    key: $crate::util::psbt::serialize::Serialize::serialize(key),
+                    key: $crate::util::psbt::serialize::Serialize::serialize(key)?,
                 },
-                value: $crate::util::psbt::serialize::Serialize::serialize(val),
+                value: $crate::util::psbt::serialize::Serialize::serialize(val)?,
             });
         }
     };
@@ -159,19 +175,23 @@ macro_rules! impl_psbt_get_pair {
 
 // macros for serde of hashes
 macro_rules! impl_psbt_hash_de_serialize {
-    ($hash_type:ty) => {
+    ($hash_type:ty, $len:expr) => {
         impl_psbt_hash_serialize!($hash_type);
-        impl_psbt_hash_deserialize!($hash_type);
+        impl_psbt_hash_deserialize!($hash_type, $len);
     };
 }
 
 macro_rules! impl_psbt_hash_deserialize {
-    ($hash_type:ty) => {
+    ($hash_type:ty, $len:expr) => {
         impl $crate::util::psbt::serialize::Deserialize for $hash_type {
             fn deserialize(bytes: &[u8]) -> Result<Self, $crate::consensus::encode::Error> {
-                <$hash_type>::from_slice(&bytes[..]).map_err(|e| {
-                    $crate::util::psbt::Error::from(e).into()
-                })
+                let bytes: [u8; $len] = bytes.try_into().map_err(|_| {
+                    $crate::util::psbt::Error::InvalidHashLength {
+                        expected: $len,
+                        actual: bytes.len(),
+                    }
+                })?;
+                Ok(<$hash_type>::from_byte_array(bytes))
             }
         }
     };
@@ -180,8 +200,8 @@ macro_rules! impl_psbt_hash_deserialize {
 macro_rules! impl_psbt_hash_serialize {
     ($hash_type:ty) => {
         impl $crate::util::psbt::serialize::Serialize for $hash_type {
-            fn serialize(&self) -> Vec<u8> {
-                self.into_inner().to_vec()
+            fn serialize(&self) -> ::std::io::Result<Vec<u8>> {
+                Ok(self.to_byte_array().to_vec())
             }
         }
     };

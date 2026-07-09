@@ -25,18 +25,18 @@
 //! # Examples
 //!
 //! ```rust
-//! use bitcoin::hash_types::Txid;
-//! use bitcoin::hashes::hex::FromHex;
-//! use bitcoin::{Block, MerkleBlock};
+//! use mwc_bitcoin::hash_types::Txid;
+//! use mwc_bitcoin::hashes::hex;
+//! use mwc_bitcoin::{Block, MerkleBlock};
 //!
 //! // Get the proof from a bitcoind by running in the terminal:
 //! // $ TXID="5a4ebf66822b0b2d56bd9dc64ece0bc38ee7844a23ff1d7320a88c5fdb2ad3e2"
 //! // $ bitcoin-cli gettxoutproof [\"$TXID\"]
-//! let mb_bytes = Vec::from_hex("01000000ba8b9cda965dd8e536670f9ddec10e53aab14b20bacad27b913719\
+//! let mb_bytes = hex::decode_to_vec("01000000ba8b9cda965dd8e536670f9ddec10e53aab14b20bacad27b913719\
 //!     0000000000190760b278fe7b8565fda3b968b918d5fd997f993b23674c0af3b6fde300b38f33a5914ce6ed5b\
 //!     1b01e32f570200000002252bf9d75c4f481ebb6278d708257d1f12beb6dd30301d26c623f789b2ba6fc0e2d3\
 //!     2adb5f8ca820731dff234a84e78ec30bce4ec69dbd562d0b2b8266bf4e5a0105").unwrap();
-//! let mb: MerkleBlock = bitcoin::consensus::deserialize(&mb_bytes).unwrap();
+//! let mb: MerkleBlock = mwc_bitcoin::consensus::deserialize(&mb_bytes).unwrap();
 //!
 //! // Authenticate and extract matched transaction ids
 //! let mut matches: Vec<Txid> = vec![];
@@ -44,7 +44,7 @@
 //! assert!(mb.extract_matches(&mut matches, &mut index).is_ok());
 //! assert_eq!(1, matches.len());
 //! assert_eq!(
-//!     Txid::from_hex(
+//!     <Txid as ::std::str::FromStr>::from_str(
 //!         "5a4ebf66822b0b2d56bd9dc64ece0bc38ee7844a23ff1d7320a88c5fdb2ad3e2").unwrap(),
 //!     matches[0]
 //! );
@@ -55,14 +55,14 @@
 use std::collections::HashSet;
 use std::io;
 
-use hashes::Hash;
-use hash_types::{Txid, TxMerkleNode};
+use crate::hashes::sha256d;
+use crate::hash_types::{Txid, TxMerkleNode};
 
-use blockdata::transaction::Transaction;
-use blockdata::constants::{MAX_BLOCK_WEIGHT, MIN_TRANSACTION_WEIGHT};
-use consensus::encode::{self, Decodable, Encodable};
-use util::merkleblock::MerkleBlockError::*;
-use {Block, BlockHeader};
+use crate::blockdata::transaction::Transaction;
+use crate::blockdata::constants::{MAX_BLOCK_WEIGHT, MIN_TRANSACTION_WEIGHT};
+use crate::consensus::encode::{self, Decodable, Encodable};
+use crate::util::merkleblock::MerkleBlockError::*;
+use crate::{Block, BlockHeader};
 
 /// An error when verifying the merkle block
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -125,14 +125,13 @@ impl PartialMerkleTree {
     /// The `txids` are the transaction hashes of the block and the `matches` is the contains flags
     /// wherever a tx hash should be included in the proof.
     ///
-    /// Panics when `txids` is empty or when `matches` has a different length
+    /// Errors when `txids` is empty or when `matches` has a different length.
     ///
     /// # Examples
     ///
     /// ```rust
-    /// use bitcoin::hash_types::Txid;
-    /// use bitcoin::hashes::hex::FromHex;
-    /// use bitcoin::util::merkleblock::PartialMerkleTree;
+    /// use mwc_bitcoin::hash_types::Txid;
+    /// use mwc_bitcoin::util::merkleblock::PartialMerkleTree;
     ///
     /// // Block 80000
     /// let txids: Vec<Txid> = [
@@ -140,32 +139,40 @@ impl PartialMerkleTree {
     ///     "5a4ebf66822b0b2d56bd9dc64ece0bc38ee7844a23ff1d7320a88c5fdb2ad3e2",
     /// ]
     /// .iter()
-    /// .map(|hex| Txid::from_hex(hex).unwrap())
+    /// .map(|hex| <Txid as ::std::str::FromStr>::from_str(hex).unwrap())
     /// .collect();
     ///
     /// // Select the second transaction
     /// let matches = vec![false, true];
-    /// let tree = PartialMerkleTree::from_txids(&txids, &matches);
+    /// let tree = PartialMerkleTree::from_txids(&txids, &matches).unwrap();
     /// assert!(tree.extract_matches(&mut vec![], &mut vec![]).is_ok());
     /// ```
-    pub fn from_txids(txids: &[Txid], matches: &[bool]) -> Self {
+    pub fn from_txids(txids: &[Txid], matches: &[bool]) -> Result<Self, MerkleBlockError> {
         // We can never have zero txs in a merkle block, we always need the coinbase tx
-        assert_ne!(txids.len(), 0);
-        assert_eq!(txids.len(), matches.len());
+        if txids.is_empty() {
+            return Err(NoTransactions);
+        }
+        if txids.len() != matches.len() {
+            return Err(BadFormat("Transaction and match count differ".to_owned()));
+        }
+        if txids.len() > MAX_BLOCK_WEIGHT as usize / MIN_TRANSACTION_WEIGHT as usize {
+            return Err(TooManyTransactions);
+        }
+        let num_transactions = u32::try_from(txids.len()).map_err(|_| TooManyTransactions)?;
 
         let mut pmt = PartialMerkleTree {
-            num_transactions: txids.len() as u32,
+            num_transactions: num_transactions,
             bits: Vec::with_capacity(txids.len()),
             hashes: vec![],
         };
         // calculate height of tree
         let mut height = 0;
-        while pmt.calc_tree_width(height) > 1 {
+        while pmt.calc_tree_width(height)? > 1 {
             height += 1;
         }
         // traverse the partial tree
-        pmt.traverse_and_build(height, 0, txids, matches);
-        pmt
+        pmt.traverse_and_build(height, 0, txids, matches)?;
+        Ok(pmt)
     }
 
     /// Extract the matching txid's represented by this partial merkle tree
@@ -187,7 +194,9 @@ impl PartialMerkleTree {
             return Err(TooManyTransactions);
         }
         // there can never be more hashes provided than one for every txid
-        if self.hashes.len() as u32 > self.num_transactions {
+        let hash_count = u32::try_from(self.hashes.len())
+            .map_err(|_| BadFormat("Proof contains too many hashes".to_owned()))?;
+        if hash_count > self.num_transactions {
             return Err(BadFormat(
                 "Proof contains more hashes than transactions".to_owned(),
             ));
@@ -198,7 +207,7 @@ impl PartialMerkleTree {
         };
         // calculate height of tree
         let mut height = 0;
-        while self.calc_tree_width(height) > 1 {
+        while self.calc_tree_width(height)? > 1 {
             height += 1;
         }
         // traverse the partial tree
@@ -208,39 +217,58 @@ impl PartialMerkleTree {
             self.traverse_and_extract(height, 0, &mut bits_used, &mut hash_used, matches, indexes)?;
         // Verify that all bits were consumed (except for the padding caused by
         // serializing it as a byte sequence)
-        if (bits_used + 7) / 8 != (self.bits.len() as u32 + 7) / 8 {
+        // if (bits_used + 7) / 8 != (self.bits.len() as u32 + 7) / 8
+        let bits_len = u32::try_from(self.bits.len())
+            .map_err(|_| BadFormat("Proof contains too many bits".to_owned()))?;
+        let used_bytes = bits_used.checked_add(7)
+            .ok_or_else(|| BadFormat("Consumed bit count overflow".to_owned()))? / 8;
+        let total_bytes = bits_len.checked_add(7)
+            .ok_or_else(|| BadFormat("Bit count overflow".to_owned()))? / 8;
+        if used_bytes != total_bytes {
             return Err(BadFormat("Not all bit were consumed".to_owned()));
         }
         // Verify that all hashes were consumed
-        if hash_used != self.hashes.len() as u32 {
+        if hash_used != hash_count {
             return Err(BadFormat("Not all hashes were consumed".to_owned()));
         }
-        Ok(TxMerkleNode::from_inner(hash_merkle_root.into_inner()))
+        Ok(TxMerkleNode::from_byte_array(hash_merkle_root.to_byte_array()))
     }
 
     /// Helper function to efficiently calculate the number of nodes at given height
     /// in the merkle tree
     #[inline]
-    fn calc_tree_width(&self, height: u32) -> u32 {
-        (self.num_transactions + (1 << height) - 1) >> height
+    fn calc_tree_width(&self, height: u32) -> Result<u32, MerkleBlockError> {
+        // return (self.num_transactions + (1 << height) - 1) >> height
+        let level_width = 1u32.checked_shl(height)
+            .ok_or_else(|| BadFormat("Tree height overflow".to_owned()))?;
+        let numerator = self.num_transactions
+            .checked_add(level_width.checked_sub(1)
+                .ok_or_else(|| BadFormat("Tree width overflow".to_owned()))?)
+            .ok_or_else(|| BadFormat("Tree width overflow".to_owned()))?;
+        Ok(numerator >> height)
     }
 
     /// Calculate the hash of a node in the merkle tree (at leaf level: the txid's themselves)
-    fn calc_hash(&self, height: u32, pos: u32, txids: &[Txid]) -> TxMerkleNode {
+    fn calc_hash(&self, height: u32, pos: u32, txids: &[Txid]) -> Result<TxMerkleNode, MerkleBlockError> {
         if height == 0 {
             // Hash at height 0 is the txid itself
-            TxMerkleNode::from_inner(txids[pos as usize].into_inner())
+            Ok(TxMerkleNode::from_byte_array(txids[pos as usize].to_byte_array()))
         } else {
             // Calculate left hash
-            let left = self.calc_hash(height - 1, pos * 2, txids);
+            let left_pos = pos.checked_mul(2)
+                .ok_or_else(|| BadFormat("Merkle tree position overflow".to_owned()))?;
+            let left = self.calc_hash(height - 1, left_pos, txids)?;
             // Calculate right hash if not beyond the end of the array - copy left hash otherwise
-            let right = if pos * 2 + 1 < self.calc_tree_width(height - 1) {
-                self.calc_hash(height - 1, pos * 2 + 1, txids)
+            let right_pos = left_pos.checked_add(1)
+                .ok_or_else(|| BadFormat("Merkle tree position overflow".to_owned()))?;
+            let right = if right_pos < self.calc_tree_width(height - 1)? {
+                self.calc_hash(height - 1, right_pos, txids)?
             } else {
                 left
             };
             // Combine subhashes
             PartialMerkleTree::parent_hash(left, right)
+                .map_err(|e| BadFormat(format!("Could not hash parent node: {}", e)))
         }
     }
 
@@ -251,28 +279,38 @@ impl PartialMerkleTree {
         pos: u32,
         txids: &[Txid],
         matches: &[bool],
-    ) {
+    ) -> Result<(), MerkleBlockError> {
         // Determine whether this node is the parent of at least one matched txid
         let mut parent_of_match = false;
-        let mut p = pos << height;
-        while p < (pos + 1) << height && p < self.num_transactions {
+        let mut p = pos.checked_shl(height)
+            .ok_or_else(|| BadFormat("Merkle tree position overflow".to_owned()))?;
+        let end = pos.checked_add(1)
+            .and_then(|pos| pos.checked_shl(height))
+            .ok_or_else(|| BadFormat("Merkle tree position overflow".to_owned()))?;
+        while p < end && p < self.num_transactions {
             parent_of_match |= matches[p as usize];
-            p += 1;
+            p = p.checked_add(1)
+                .ok_or_else(|| BadFormat("Merkle tree position overflow".to_owned()))?;
         }
         // Store as flag bit
         self.bits.push(parent_of_match);
 
         if height == 0 || !parent_of_match {
             // If at height 0, or nothing interesting below, store hash and stop
-            let hash = self.calc_hash(height, pos, txids);
+            let hash = self.calc_hash(height, pos, txids)?;
             self.hashes.push(hash);
         } else {
             // Otherwise, don't store any hash, but descend into the subtrees
-            self.traverse_and_build(height - 1, pos * 2, txids, matches);
-            if pos * 2 + 1 < self.calc_tree_width(height - 1) {
-                self.traverse_and_build(height - 1, pos * 2 + 1, txids, matches);
+            let left_pos = pos.checked_mul(2)
+                .ok_or_else(|| BadFormat("Merkle tree position overflow".to_owned()))?;
+            self.traverse_and_build(height - 1, left_pos, txids, matches)?;
+            let right_pos = left_pos.checked_add(1)
+                .ok_or_else(|| BadFormat("Merkle tree position overflow".to_owned()))?;
+            if right_pos < self.calc_tree_width(height - 1)? {
+                self.traverse_and_build(height - 1, right_pos, txids, matches)?;
             }
         }
+        Ok(())
     }
 
     /// Recursive function that traverses tree nodes, consuming the bits and hashes produced by
@@ -290,35 +328,41 @@ impl PartialMerkleTree {
             return Err(BadFormat("Overflowed the bits array".to_owned()));
         }
         let parent_of_match = self.bits[*bits_used as usize];
-        *bits_used += 1;
+        *bits_used = bits_used.checked_add(1)
+            .ok_or_else(|| BadFormat("Consumed bit count overflow".to_owned()))?;
         if height == 0 || !parent_of_match {
             // If at height 0, or nothing interesting below, use stored hash and do not descend
             if *hash_used as usize >= self.hashes.len() {
                 return Err(BadFormat("Overflowed the hash array".to_owned()));
             }
             let hash = self.hashes[*hash_used as usize];
-            *hash_used += 1;
+            *hash_used = hash_used.checked_add(1)
+                .ok_or_else(|| BadFormat("Consumed hash count overflow".to_owned()))?;
             if height == 0 && parent_of_match {
                 // in case of height 0, we have a matched txid
-                matches.push(Txid::from_inner(hash.into_inner()));
+                matches.push(Txid::from_byte_array(hash.to_byte_array()));
                 indexes.push(pos);
             }
             Ok(hash)
         } else {
             // otherwise, descend into the subtrees to extract matched txids and hashes
+            let left_pos = pos.checked_mul(2)
+                .ok_or_else(|| BadFormat("Merkle tree position overflow".to_owned()))?;
             let left = self.traverse_and_extract(
                 height - 1,
-                pos * 2,
+                left_pos,
                 bits_used,
                 hash_used,
                 matches,
                 indexes,
             )?;
             let right;
-            if pos * 2 + 1 < self.calc_tree_width(height - 1) {
+            let right_pos = left_pos.checked_add(1)
+                .ok_or_else(|| BadFormat("Merkle tree position overflow".to_owned()))?;
+            if right_pos < self.calc_tree_width(height - 1)? {
                 right = self.traverse_and_extract(
                     height - 1,
-                    pos * 2 + 1,
+                    right_pos,
                     bits_used,
                     hash_used,
                     matches,
@@ -333,16 +377,17 @@ impl PartialMerkleTree {
                 right = left;
             }
             // and combine them before returning
-            Ok(PartialMerkleTree::parent_hash(left, right))
+            PartialMerkleTree::parent_hash(left, right)
+                .map_err(|e| BadFormat(format!("Could not hash parent node: {}", e)))
         }
     }
 
     /// Helper method to produce SHA256D(left + right)
-    fn parent_hash(left: TxMerkleNode, right: TxMerkleNode) -> TxMerkleNode {
-        let mut encoder = TxMerkleNode::engine();
-        left.consensus_encode(&mut encoder).unwrap();
-        right.consensus_encode(&mut encoder).unwrap();
-        TxMerkleNode::from_engine(encoder)
+    fn parent_hash(left: TxMerkleNode, right: TxMerkleNode) -> Result<TxMerkleNode, io::Error> {
+        let mut encoder = sha256d::Hash::engine();
+        left.consensus_encode(&mut encoder)?;
+        right.consensus_encode(&mut encoder)?;
+        Ok(TxMerkleNode::from_byte_array(sha256d::Hash::from_engine(encoder).to_byte_array()))
     }
 }
 
@@ -352,12 +397,14 @@ impl Encodable for PartialMerkleTree {
         mut s: S,
     ) -> Result<usize, io::Error> {
         let ret = self.num_transactions.consensus_encode(&mut s)?
-            + self.hashes.consensus_encode(&mut s)?;
+            .checked_add(self.hashes.consensus_encode(&mut s)?)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "encoded length overflow"))?;
         let mut bytes: Vec<u8> = vec![0; (self.bits.len() + 7) / 8];
         for p in 0..self.bits.len() {
             bytes[p / 8] |= (self.bits[p] as u8) << (p % 8) as u8;
         }
-        Ok(ret + bytes.consensus_encode(s)?)
+        ret.checked_add(bytes.consensus_encode(s)?)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "encoded length overflow"))
     }
 }
 
@@ -401,12 +448,12 @@ impl MerkleBlock {
     /// # Examples
     ///
     /// ```rust
-    /// use bitcoin::hash_types::Txid;
-    /// use bitcoin::hashes::hex::FromHex;
-    /// use bitcoin::{Block, MerkleBlock};
+    /// use mwc_bitcoin::hash_types::Txid;
+    /// use mwc_bitcoin::hashes::hex;
+    /// use mwc_bitcoin::{Block, MerkleBlock};
     ///
     /// // Block 80000
-    /// let block_bytes = Vec::from_hex("01000000ba8b9cda965dd8e536670f9ddec10e53aab14b20bacad2\
+    /// let block_bytes = hex::decode_to_vec("01000000ba8b9cda965dd8e536670f9ddec10e53aab14b20bacad2\
     ///     7b9137190000000000190760b278fe7b8565fda3b968b918d5fd997f993b23674c0af3b6fde300b38f33\
     ///     a5914ce6ed5b1b01e32f5702010000000100000000000000000000000000000000000000000000000000\
     ///     00000000000000ffffffff0704e6ed5b1b014effffffff0100f2052a01000000434104b68a50eaa0287e\
@@ -416,13 +463,13 @@ impl MerkleBlock {
     ///     d3ee3738d9e1446618c4571d1090db022100e2ac980643b0b82c0e88ffdfec6b64e3e6ba35e7ba5fdd7d\
     ///     5d6cc8d25c6b241501ffffffff0100f2052a010000001976a914404371705fa9bd789a2fcd52d2c580b6\
     ///     5d35549d88ac00000000").unwrap();
-    /// let block: Block = bitcoin::consensus::deserialize(&block_bytes).unwrap();
+    /// let block: Block = mwc_bitcoin::consensus::deserialize(&block_bytes).unwrap();
     ///
     /// // Create a merkle block containing a single transaction
-    /// let txid = Txid::from_hex(
+    /// let txid = <Txid as ::std::str::FromStr>::from_str(
     ///     "5a4ebf66822b0b2d56bd9dc64ece0bc38ee7844a23ff1d7320a88c5fdb2ad3e2").unwrap();
     /// let match_txids = vec![txid].into_iter().collect();
-    /// let mb = MerkleBlock::from_block(&block, &match_txids);
+    /// let mb = MerkleBlock::from_block(&block, &match_txids).unwrap();
     ///
     /// // Authenticate and extract matched transaction ids
     /// let mut matches: Vec<Txid> = vec![];
@@ -430,8 +477,11 @@ impl MerkleBlock {
     /// assert!(mb.extract_matches(&mut matches, &mut index).is_ok());
     /// assert_eq!(txid, matches[0]);
     /// ```
-    pub fn from_block(block: &Block, match_txids: &HashSet<Txid>) -> Self {
-        let block_txids: Vec<_> = block.txdata.iter().map(Transaction::txid).collect();
+    pub fn from_block(block: &Block, match_txids: &HashSet<Txid>) -> Result<Self, MerkleBlockError> {
+        let block_txids: Vec<_> = block.txdata.iter()
+            .map(Transaction::txid)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| BadFormat(format!("Could not calculate transaction id: {}", e)))?;
         Self::from_header_txids(&block.header, &block_txids, match_txids)
     }
 
@@ -443,17 +493,17 @@ impl MerkleBlock {
         header: &BlockHeader,
         block_txids: &[Txid],
         match_txids: &HashSet<Txid>,
-    ) -> Self {
+    ) -> Result<Self, MerkleBlockError> {
         let matches: Vec<bool> = block_txids
             .iter()
             .map(|txid| match_txids.contains(txid))
             .collect();
 
-        let pmt = PartialMerkleTree::from_txids(&block_txids, &matches);
-        MerkleBlock {
+        let pmt = PartialMerkleTree::from_txids(&block_txids, &matches)?;
+        Ok(MerkleBlock {
             header: *header,
             txn: pmt,
-        }
+        })
     }
 
     /// Extract the matching txid's represented by this partial merkle tree
@@ -498,30 +548,30 @@ impl Decodable for MerkleBlock {
 mod tests {
     use std::cmp::min;
 
-    use hashes::Hash;
-    use hashes::hex::{FromHex, ToHex};
-    use hash_types::{Txid, TxMerkleNode};
-    use secp256k1::rand::prelude::*;
+    use crate::hashes::hex::{self, DisplayHex};
+    use crate::hash_types::{Txid, TxMerkleNode};
+    use crate::secp256k1::rand::{RngExt, rand_core::UnwrapErr, rngs::SysRng};
 
-    use consensus::encode::{deserialize, serialize};
-    use util::hash::bitcoin_merkle_root;
-    use util::merkleblock::{MerkleBlock, PartialMerkleTree};
-    use Block;
+    use crate::consensus::encode::{deserialize, serialize};
+    use crate::util::hash::bitcoin_merkle_root;
+
+    use crate::util::merkleblock::{MerkleBlock, PartialMerkleTree};
+    use crate::Block;
 
     #[test]
     fn pmt_tests() {
-        let mut rng = thread_rng();
+        let mut sys_rng = UnwrapErr(SysRng);
         let tx_counts = vec![1, 4, 7, 17, 56, 100, 127, 256, 312, 513, 1000, 4095];
 
         for num_tx in tx_counts {
             // Create some fake tx ids
             let txids = (1..num_tx + 1) // change to `1..=num_tx` when min Rust >= 1.26.0
-                .map(|i| Txid::from_hex(&format!("{:064x}", i)).unwrap())
+                .map(|i| <Txid as ::std::str::FromStr>::from_str(&format!("{:064x}", i)).unwrap())
                 .collect::<Vec<_>>();
 
             // Calculate the merkle root and height
-            let hashes = txids.iter().map(|t| t.as_hash());
-            let merkle_root_1: TxMerkleNode = bitcoin_merkle_root(hashes).into();
+            let hashes = txids.iter().map(|t| TxMerkleNode::from_byte_array(t.to_byte_array()));
+            let merkle_root_1: TxMerkleNode = bitcoin_merkle_root(hashes).unwrap();
             let mut height = 1;
             let mut ntx = num_tx;
             while ntx > 1 {
@@ -537,7 +587,7 @@ mod tests {
                     // Generate `att / 2` random bits
                     let rand_bits = match att / 2 {
                         0 => 0,
-                        bits => rng.gen::<u64>() >> (64 - bits),
+                        bits => sys_rng.random::<u64>() >> (64 - bits),
                     };
                     let include = rand_bits == 0;
                     matches[j] = include;
@@ -548,8 +598,8 @@ mod tests {
                 }
 
                 // Build the partial merkle tree
-                let pmt1 = PartialMerkleTree::from_txids(&txids, &matches);
-                let serialized = serialize(&pmt1);
+                let pmt1 = PartialMerkleTree::from_txids(&txids, &matches).unwrap();
+                let serialized = serialize(&pmt1).unwrap();
 
                 // Verify PartialMerkleTree's size guarantees
                 let n = min(num_tx, 1 + match_txid1.len() * height);
@@ -568,7 +618,7 @@ mod tests {
 
                 // Check that it has the same merkle root as the original, and a valid one
                 assert_eq!(merkle_root_1, merkle_root_2);
-                assert_ne!(merkle_root_2, TxMerkleNode::default());
+                assert_ne!(merkle_root_2, TxMerkleNode::from_byte_array([0u8; 32]));
 
                 // check that it contains the matched transactions (in the same order!)
                 assert_eq!(match_txid1, match_txid2);
@@ -576,7 +626,7 @@ mod tests {
                 // check that random bit flips break the authentication
                 for _ in 0..4 {
                     let mut pmt3: PartialMerkleTree = deserialize(&serialized).unwrap();
-                    pmt3.damage(&mut rng);
+                    pmt3.damage(&mut sys_rng);
                     let mut match_txid3 = vec![];
                     let merkle_root_3 = pmt3
                         .extract_matches(&mut match_txid3, &mut indexes)
@@ -592,14 +642,14 @@ mod tests {
         // Create some fake tx ids with the last 2 hashes repeating
         let txids: Vec<Txid> = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 9, 10]
             .iter()
-            .map(|i| Txid::from_hex(&format!("{:064x}", i)).unwrap())
+            .map(|i| <Txid as ::std::str::FromStr>::from_str(&format!("{:064x}", i)).unwrap())
             .collect();
 
         let matches = vec![
             false, false, false, false, false, false, false, false, false, true, true, false,
         ];
 
-        let tree = PartialMerkleTree::from_txids(&txids, &matches);
+        let tree = PartialMerkleTree::from_txids(&txids, &matches).unwrap();
         // Should fail due to duplicate txs found
         let result = tree.extract_matches(&mut vec![], &mut vec![]);
         assert!(result.is_err());
@@ -617,14 +667,14 @@ mod tests {
             ebe1ae264bc0e2289189ff0316cdc10511da71da757e553cada9f3b5b1434f3923673adb57d83caac392c38\
             af156d6fc30b55fad4112df2b95531e68114e9ad10011e72f7b7cfdb025700";
 
-        let mb: MerkleBlock = deserialize(&Vec::from_hex(mb_hex).unwrap()).unwrap();
-        assert_eq!(get_block_13b8a().block_hash(), mb.header.block_hash());
+        let mb: MerkleBlock = deserialize(&hex::decode_to_vec(mb_hex).unwrap()).unwrap();
+        assert_eq!(get_block_13b8a().block_hash().unwrap(), mb.header.block_hash().unwrap());
         assert_eq!(
             mb.header.merkle_root,
             mb.txn.extract_matches(&mut vec![], &mut vec![]).unwrap()
         );
         // Serialize again and check that it matches the original bytes
-        assert_eq!(mb_hex, serialize(&mb).to_hex().as_str());
+        assert_eq!(mb_hex, serialize(&mb).unwrap().to_lower_hex_string().as_str());
     }
 
     /// Create a CMerkleBlock using a list of txids which will be found in the
@@ -638,16 +688,16 @@ mod tests {
             "f9fc751cb7dc372406a9f8d738d5e6f8f63bab71986a39cf36ee70ee17036d07",
         ]
         .iter()
-        .map(|hex| Txid::from_hex(hex).unwrap())
+        .map(|hex| <Txid as ::std::str::FromStr>::from_str(hex).unwrap())
         .collect();
 
         let txid1 = txids[0];
         let txid2 = txids[1];
         let txids = txids.into_iter().collect();
 
-        let merkle_block = MerkleBlock::from_block(&block, &txids);
+        let merkle_block = MerkleBlock::from_block(&block, &txids).unwrap();
 
-        assert_eq!(merkle_block.header.block_hash(), block.block_hash());
+        assert_eq!(merkle_block.header.block_hash().unwrap(), block.block_hash().unwrap());
 
         let mut matches: Vec<Txid> = vec![];
         let mut index: Vec<u32> = vec![];
@@ -675,12 +725,12 @@ mod tests {
         let block = get_block_13b8a();
         let txids = ["c0ffee00003bafa802c8aa084379aa98d9fcd632ddc2ed9782b586ec87451f20"]
             .iter()
-            .map(|hex| Txid::from_hex(hex).unwrap())
+            .map(|hex| <Txid as ::std::str::FromStr>::from_str(hex).unwrap())
             .collect();
 
-        let merkle_block = MerkleBlock::from_block(&block, &txids);
+        let merkle_block = MerkleBlock::from_block(&block, &txids).unwrap();
 
-        assert_eq!(merkle_block.header.block_hash(), block.block_hash());
+        assert_eq!(merkle_block.header.block_hash().unwrap(), block.block_hash().unwrap());
 
         let mut matches: Vec<Txid> = vec![];
         let mut index: Vec<u32> = vec![];
@@ -698,13 +748,13 @@ mod tests {
 
     impl PartialMerkleTree {
         /// Flip one bit in one of the hashes - this should break the authentication
-        fn damage(&mut self, rng: &mut ThreadRng) {
-            let n = rng.gen_range(0, self.hashes.len());
-            let bit = rng.gen::<u8>();
+        fn damage(&mut self, sys_rng: &mut UnwrapErr<SysRng>) {
+            let n = sys_rng.random_range(0..self.hashes.len());
+            let bit = sys_rng.random::<u8>();
             let hashes = &mut self.hashes;
-            let mut hash = hashes[n].into_inner();
+            let mut hash = hashes[n].to_byte_array();
             hash[(bit >> 3) as usize] ^= 1 << (bit & 7);
-            hashes[n] = TxMerkleNode::from_slice(&hash).unwrap();
+            hashes[n] = TxMerkleNode::from_byte_array(hash);
         }
     }
 
@@ -783,6 +833,6 @@ mod tests {
             058b800a098fc1740ce3012e8fc8a00c96af966ffffffff02c0e1e400000000001976a9144134e75a6fcb60\
             42034aab5e18570cf1f844f54788ac404b4c00000000001976a9142b6ba7c9d796b75eef7942fc9288edd37\
             c32f5c388ac00000000";
-        deserialize(&Vec::from_hex(block_hex).unwrap()).unwrap()
+        deserialize(&hex::decode_to_vec(block_hex).unwrap()).unwrap()
     }
 }

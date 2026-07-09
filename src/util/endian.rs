@@ -2,10 +2,10 @@ macro_rules! define_slice_to_be {
     ($name: ident, $type: ty) => {
         #[inline]
         pub fn $name(slice: &[u8]) -> $type {
-            assert_eq!(slice.len(), ::std::mem::size_of::<$type>());
             let mut res = 0;
-            for i in 0..::std::mem::size_of::<$type>() {
-                res |= (slice[i] as $type) << (::std::mem::size_of::<$type>() - i - 1)*8;
+            let size = ::std::mem::size_of::<$type>();
+            for (i, byte) in slice.iter().take(size).enumerate() {
+                res |= (*byte as $type) << (size - i - 1)*8;
             }
             res
         }
@@ -15,10 +15,9 @@ macro_rules! define_slice_to_le {
     ($name: ident, $type: ty) => {
         #[inline]
         pub fn $name(slice: &[u8]) -> $type {
-            assert_eq!(slice.len(), ::std::mem::size_of::<$type>());
             let mut res = 0;
-            for i in 0..::std::mem::size_of::<$type>() {
-                res |= (slice[i] as $type) << i*8;
+            for (i, byte) in slice.iter().take(::std::mem::size_of::<$type>()).enumerate() {
+                res |= (*byte as $type) << i*8;
             }
             res
         }
@@ -90,7 +89,6 @@ macro_rules! define_chunk_slice_to_int {
     ($name: ident, $type: ty, $converter: ident) => {
         #[inline]
         pub fn $name(inp: &[u8], outp: &mut [$type]) {
-            assert_eq!(inp.len(), outp.len() * ::std::mem::size_of::<$type>());
             for (outp_val, data_bytes) in outp.iter_mut().zip(inp.chunks(::std::mem::size_of::<$type>())) {
                 *outp_val = $converter(data_bytes);
             }

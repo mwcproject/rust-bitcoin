@@ -18,9 +18,9 @@
 //! defined at https://github.com/bitcoin/bips/blob/master/bip-0174.mediawiki
 //! except we define PSBTs containing non-standard SigHash types as invalid.
 
-use blockdata::script::Script;
-use blockdata::transaction::Transaction;
-use consensus::{encode, Encodable, Decodable};
+use crate::blockdata::script::Script;
+use crate::blockdata::transaction::Transaction;
+use crate::consensus::{encode, Encodable, Decodable};
 
 use std::io;
 
@@ -96,19 +96,24 @@ impl Encodable for PartiallySignedTransaction {
         &self,
         mut s: S,
     ) -> Result<usize, io::Error> {
-        let mut len = 0;
-        len += b"psbt".consensus_encode(&mut s)?;
+        let mut len: usize = 0;
+        len = len.checked_add(b"psbt".consensus_encode(&mut s)?)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "encoded length overflow"))?;
 
-        len += 0xff_u8.consensus_encode(&mut s)?;
+        len = len.checked_add(0xff_u8.consensus_encode(&mut s)?)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "encoded length overflow"))?;
 
-        len += self.global.consensus_encode(&mut s)?;
+        len = len.checked_add(self.global.consensus_encode(&mut s)?)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "encoded length overflow"))?;
 
         for i in &self.inputs {
-            len += i.consensus_encode(&mut s)?;
+            len = len.checked_add(i.consensus_encode(&mut s)?)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "encoded length overflow"))?;
         }
 
         for i in &self.outputs {
-            len += i.consensus_encode(&mut s)?;
+            len = len.checked_add(i.consensus_encode(&mut s)?)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "encoded length overflow"))?;
         }
 
         Ok(len)
@@ -163,22 +168,22 @@ impl Decodable for PartiallySignedTransaction {
 
 #[cfg(test)]
 mod tests {
-    use hashes::hex::FromHex;
-    use hashes::{sha256, hash160, Hash, ripemd160};
-    use hash_types::Txid;
+    use crate::hashes::hex;
+    use crate::hashes::{sha256, hash160, ripemd160};
+    use crate::hash_types::Txid;
 
     use std::collections::BTreeMap;
 
-    use secp256k1::Secp256k1;
+    use crate::secp256k1::Secp256k1;
 
-    use blockdata::script::Script;
-    use blockdata::transaction::{Transaction, TxIn, TxOut, OutPoint};
-    use network::constants::Network::Bitcoin;
-    use consensus::encode::{deserialize, serialize, serialize_hex};
-    use util::bip32::{ChildNumber, ExtendedPrivKey, ExtendedPubKey, Fingerprint, KeySource};
-    use util::key::PublicKey;
-    use util::psbt::map::{Global, Output, Input};
-    use util::psbt::raw;
+    use crate::blockdata::script::Script;
+    use crate::blockdata::transaction::{Transaction, TxIn, TxOut, OutPoint};
+    use crate::network::constants::Network::Bitcoin;
+    use crate::consensus::encode::{deserialize, serialize, serialize_hex};
+    use crate::util::bip32::{ChildNumber, ExtendedPrivKey, ExtendedPubKey, Fingerprint, KeySource};
+    use crate::util::key::PublicKey;
+    use crate::util::psbt::map::{Global, Output, Input};
+    use crate::util::psbt::raw;
 
     use super::PartiallySignedTransaction;
 
@@ -201,21 +206,21 @@ mod tests {
             outputs: vec![],
         };
         assert_eq!(
-            serialize_hex(&psbt),
+            serialize_hex(&psbt).unwrap(),
             "70736274ff01000a0200000000000000000000"
         );
     }
 
     #[test]
     fn serialize_then_deserialize_output() {
-        let secp = &Secp256k1::new();
-        let seed = Vec::from_hex("000102030405060708090a0b0c0d0e0f").unwrap();
+        let secp = Secp256k1::new().unwrap();
+        let seed = hex::decode_to_vec("000102030405060708090a0b0c0d0e0f").unwrap();
 
         let mut hd_keypaths: BTreeMap<PublicKey, KeySource> = Default::default();
 
         let mut sk: ExtendedPrivKey = ExtendedPrivKey::new_master(&secp, Bitcoin, &seed).unwrap();
 
-        let fprint: Fingerprint = sk.fingerprint(&secp);
+        let fprint: Fingerprint = sk.fingerprint(&secp).unwrap();
 
         let dpath: Vec<ChildNumber> = vec![
             ChildNumber::from_normal_idx(0).unwrap(),
@@ -228,9 +233,9 @@ mod tests {
             ChildNumber::from_normal_idx(31337).unwrap(),
         ];
 
-        sk = sk.derive_priv(secp, &dpath).unwrap();
+        sk = sk.derive_priv(&secp, &dpath).unwrap();
 
-        let pk: ExtendedPubKey = ExtendedPubKey::from_private(&secp, &sk);
+        let pk: ExtendedPubKey = ExtendedPubKey::from_private(&secp, &sk).unwrap();
 
         hd_keypaths.insert(pk.public_key, (fprint, dpath.into()));
 
@@ -245,7 +250,7 @@ mod tests {
             ..Default::default()
         };
 
-        let actual: Output = deserialize(&serialize(&expected)).unwrap();
+        let actual: Output = deserialize(&serialize(&expected).unwrap()).unwrap();
 
         assert_eq!(expected, actual);
     }
@@ -258,7 +263,7 @@ mod tests {
                 lock_time: 1257139,
                 input: vec![TxIn {
                     previous_output: OutPoint {
-                        txid: Txid::from_hex(
+                        txid: <Txid as ::std::str::FromStr>::from_str(
                             "f61b1742ca13176464adb3cb66050c00787bb3a4eead37e985f2df1e37718126",
                         ).unwrap(),
                         vout: 0,
@@ -288,7 +293,7 @@ mod tests {
             unknown: Default::default(),
         };
 
-        let actual: Global = deserialize(&serialize(&expected)).unwrap();
+        let actual: Global = deserialize(&serialize(&expected).unwrap()).unwrap();
 
         assert_eq!(expected, actual);
     }
@@ -303,7 +308,7 @@ mod tests {
             value: vec![69u8, 42u8, 4u8],
         };
 
-        let actual: raw::Pair = deserialize(&serialize(&expected)).unwrap();
+        let actual: raw::Pair = deserialize(&serialize(&expected).unwrap()).unwrap();
 
         assert_eq!(expected, actual);
     }
@@ -312,15 +317,15 @@ mod tests {
     fn deserialize_and_serialize_psbt_with_two_partial_sigs() {
         let hex = "70736274ff0100890200000001207ae985d787dfe6143d5c58fad79cc7105e0e799fcf033b7f2ba17e62d7b3200000000000ffffffff02563d03000000000022002019899534b9a011043c0dd57c3ff9a381c3522c5f27c6a42319085b56ca543a1d6adc020000000000220020618b47a07ebecca4e156edb1b9ea7c24bdee0139fc049237965ffdaf56d5ee73000000000001012b801a0600000000002200201148e93e9315e37dbed2121be5239257af35adc03ffdfc5d914b083afa44dab82202025fe7371376d53cf8a2783917c28bf30bd690b0a4d4a207690093ca2b920ee076473044022007e06b362e89912abd4661f47945430739b006a85d1b2a16c01dc1a4bd07acab022061576d7aa834988b7ab94ef21d8eebd996ea59ea20529a19b15f0c9cebe3d8ac01220202b3fe93530020a8294f0e527e33fbdff184f047eb6b5a1558a352f62c29972f8a473044022002787f926d6817504431ee281183b8119b6845bfaa6befae45e13b6d430c9d2f02202859f149a6cd26ae2f03a107e7f33c7d91730dade305fe077bae677b5d44952a01010547522102b3fe93530020a8294f0e527e33fbdff184f047eb6b5a1558a352f62c29972f8a21025fe7371376d53cf8a2783917c28bf30bd690b0a4d4a207690093ca2b920ee07652ae0001014752210283ef76537f2d58ae3aa3a4bd8ae41c3f230ccadffb1a0bd3ca504d871cff05e7210353d79cc0cb1396f4ce278d005f16d948e02a6aec9ed1109f13747ecb1507b37b52ae00010147522102b3937241777b6665e0d694e52f9c1b188433641df852da6fc42187b5d8a368a321034cdd474f01cc5aa7ff834ad8bcc882a87e854affc775486bc2a9f62e8f49bd7852ae00";
         let psbt: PartiallySignedTransaction = hex_psbt!(hex).unwrap();
-        assert_eq!(hex, serialize_hex(&psbt));
+        assert_eq!(hex, serialize_hex(&psbt).unwrap());
     }
 
     #[cfg(feature = "serde")]
     #[test]
     fn test_serde_psbt() {
         //! Create a full PSBT value with various fields filled and make sure it can be JSONized.
-        use hashes::sha256d;
-        use util::psbt::map::Input;
+        use crate::hashes::sha256d;
+        use crate::util::psbt::map::Input;
 
         // create some values to use in the PSBT
         let tx = Transaction {
@@ -328,12 +333,12 @@ mod tests {
             lock_time: 0,
             input: vec![TxIn {
                 previous_output: OutPoint {
-                    txid: Txid::from_hex("e567952fb6cc33857f392efa3a46c995a28f69cca4bb1b37e0204dab1ec7a389").unwrap(),
+                    txid: <Txid as ::std::str::FromStr>::from_str("e567952fb6cc33857f392efa3a46c995a28f69cca4bb1b37e0204dab1ec7a389").unwrap(),
                     vout: 1,
                 },
                 script_sig: hex_script!("160014be18d152a9b012039daf3da7de4f53349eecb985"),
                 sequence: 4294967295,
-                witness: vec![Vec::from_hex("03d2e15674941bad4a996372cb87e1856d3652606d98562fe39c5e9e7e413f2105").unwrap()],
+                witness: vec![hex::decode_to_vec("03d2e15674941bad4a996372cb87e1856d3652606d98562fe39c5e9e7e413f2105").unwrap()],
             }],
             output: vec![
                 TxOut {
@@ -418,15 +423,15 @@ mod tests {
     mod bip_vectors {
         use std::collections::BTreeMap;
 
-        use hashes::hex::FromHex;
-        use hash_types::Txid;
+        use crate::hashes::hex;
+        use crate::hash_types::Txid;
 
-        use blockdata::script::Script;
-        use blockdata::transaction::{SigHashType, Transaction, TxIn, TxOut, OutPoint};
-        use consensus::encode::serialize_hex;
-        use util::psbt::map::{Map, Global, Input, Output};
-        use util::psbt::raw;
-        use util::psbt::PartiallySignedTransaction;
+        use crate::blockdata::script::Script;
+        use crate::blockdata::transaction::{SigHashType, Transaction, TxIn, TxOut, OutPoint};
+        use crate::consensus::encode::serialize_hex;
+        use crate::util::psbt::map::{Map, Global, Input, Output};
+        use crate::util::psbt::raw;
+        use crate::util::psbt::PartiallySignedTransaction;
 
         #[test]
         fn invalid_vector_1() {
@@ -467,7 +472,7 @@ mod tests {
                         lock_time: 1257139,
                         input: vec![TxIn {
                             previous_output: OutPoint {
-                                txid: Txid::from_hex(
+                                txid: <Txid as ::std::str::FromStr>::from_str(
                                     "f61b1742ca13176464adb3cb66050c00787bb3a4eead37e985f2df1e37718126",
                                 ).unwrap(),
                                 vout: 0,
@@ -498,7 +503,7 @@ mod tests {
                         lock_time: 0,
                         input: vec![TxIn {
                             previous_output: OutPoint {
-                                txid: Txid::from_hex(
+                                txid: <Txid as ::std::str::FromStr>::from_str(
                                     "e567952fb6cc33857f392efa3a46c995a28f69cca4bb1b37e0204dab1ec7a389",
                                 ).unwrap(),
                                 vout: 1,
@@ -506,13 +511,13 @@ mod tests {
                             script_sig: hex_script!("160014be18d152a9b012039daf3da7de4f53349eecb985"),
                             sequence: 4294967295,
                             witness: vec![
-                                Vec::from_hex("304402202712be22e0270f394f568311dc7ca9a68970b8025fdd3b240229f07f8a5f3a240220018b38d7dcd314e734c9276bd6fb40f673325bc4baa144c800d2f2f02db2765c01").unwrap(),
-                                Vec::from_hex("03d2e15674941bad4a996372cb87e1856d3652606d98562fe39c5e9e7e413f2105").unwrap(),
+                                hex::decode_to_vec("304402202712be22e0270f394f568311dc7ca9a68970b8025fdd3b240229f07f8a5f3a240220018b38d7dcd314e734c9276bd6fb40f673325bc4baa144c800d2f2f02db2765c01").unwrap(),
+                                hex::decode_to_vec("03d2e15674941bad4a996372cb87e1856d3652606d98562fe39c5e9e7e413f2105").unwrap(),
                             ],
                         },
                         TxIn {
                             previous_output: OutPoint {
-                                txid: Txid::from_hex(
+                                txid: <Txid as ::std::str::FromStr>::from_str(
                                     "b490486aec3ae671012dddb2bb08466bef37720a533a894814ff1da743aaf886",
                                 ).unwrap(),
                                 vout: 1,
@@ -520,8 +525,8 @@ mod tests {
                             script_sig: hex_script!("160014fe3e9ef1a745e974d902c4355943abcb34bd5353"),
                             sequence: 4294967295,
                             witness: vec![
-                                Vec::from_hex("3045022100d12b852d85dcd961d2f5f4ab660654df6eedcc794c0c33ce5cc309ffb5fce58d022067338a8e0e1725c197fb1a88af59f51e44e4255b20167c8684031c05d1f2592a01").unwrap(),
-                                Vec::from_hex("0223b72beef0965d10be0778efecd61fcac6f79a4ea169393380734464f84f2ab3").unwrap(),
+                                hex::decode_to_vec("3045022100d12b852d85dcd961d2f5f4ab660654df6eedcc794c0c33ce5cc309ffb5fce58d022067338a8e0e1725c197fb1a88af59f51e44e4255b20167c8684031c05d1f2592a01").unwrap(),
+                                hex::decode_to_vec("0223b72beef0965d10be0778efecd61fcac6f79a4ea169393380734464f84f2ab3").unwrap(),
                             ],
                         }],
                         output: vec![
@@ -549,7 +554,7 @@ mod tests {
 
             let serialized = "70736274ff0100750200000001268171371edff285e937adeea4b37b78000c0566cbb3ad64641713ca42171bf60000000000feffffff02d3dff505000000001976a914d0c59903c5bac2868760e90fd521a4665aa7652088ac00e1f5050000000017a9143545e6e33b832c47050f24d3eeb93c9c03948bc787b32e1300000100fda5010100000000010289a3c71eab4d20e0371bbba4cc698fa295c9463afa2e397f8533ccb62f9567e50100000017160014be18d152a9b012039daf3da7de4f53349eecb985ffffffff86f8aa43a71dff1448893a530a7237ef6b4608bbb2dd2d0171e63aec6a4890b40100000017160014fe3e9ef1a745e974d902c4355943abcb34bd5353ffffffff0200c2eb0b000000001976a91485cff1097fd9e008bb34af709c62197b38978a4888ac72fef84e2c00000017a914339725ba21efd62ac753a9bcd067d6c7a6a39d05870247304402202712be22e0270f394f568311dc7ca9a68970b8025fdd3b240229f07f8a5f3a240220018b38d7dcd314e734c9276bd6fb40f673325bc4baa144c800d2f2f02db2765c012103d2e15674941bad4a996372cb87e1856d3652606d98562fe39c5e9e7e413f210502483045022100d12b852d85dcd961d2f5f4ab660654df6eedcc794c0c33ce5cc309ffb5fce58d022067338a8e0e1725c197fb1a88af59f51e44e4255b20167c8684031c05d1f2592a01210223b72beef0965d10be0778efecd61fcac6f79a4ea169393380734464f84f2ab300000000000000";
 
-            assert_eq!(serialize_hex(&unserialized), serialized);
+            assert_eq!(serialize_hex(&unserialized).unwrap(), serialized);
             assert_eq!(unserialized, hex_psbt!(serialized).unwrap());
         }
 
@@ -587,7 +592,7 @@ mod tests {
             let tx_input = &psbt.global.unsigned_tx.input[0];
             let psbt_non_witness_utxo = (&psbt.inputs[0].non_witness_utxo).as_ref().unwrap();
 
-            assert_eq!(tx_input.previous_output.txid, psbt_non_witness_utxo.txid());
+            assert_eq!(tx_input.previous_output.txid, psbt_non_witness_utxo.txid().unwrap());
             assert!(
                 psbt_non_witness_utxo.output[tx_input.previous_output.vout as usize]
                     .script_pubkey
@@ -654,8 +659,8 @@ mod tests {
 
             let tx = &psbt.global.unsigned_tx;
             assert_eq!(
-                tx.txid(),
-                Txid::from_hex(
+                tx.txid().unwrap(),
+                <Txid as ::std::str::FromStr>::from_str(
                     "75c5c9665a570569ad77dd1279e6fd4628a093c4dcbf8d41532614044c14c115"
                 ).unwrap()
             );
@@ -663,9 +668,9 @@ mod tests {
             let mut unknown: BTreeMap<raw::Key, Vec<u8>> = BTreeMap::new();
             let key: raw::Key = raw::Key {
                 type_value: 0x0fu8,
-                key: Vec::from_hex("010203040506070809").unwrap(),
+                key: hex::decode_to_vec("010203040506070809").unwrap(),
             };
-            let value: Vec<u8> = Vec::from_hex("0102030405060708090a0b0c0d0e0f").unwrap();
+            let value: Vec<u8> = hex::decode_to_vec("0102030405060708090a0b0c0d0e0f").unwrap();
 
             unknown.insert(key, value);
 
@@ -693,7 +698,7 @@ mod tests {
                     lock_time: 1257139,
                     input: vec![TxIn {
                         previous_output: OutPoint {
-                            txid: Txid::from_hex(
+                            txid: <Txid as ::std::str::FromStr>::from_str(
                                 "f61b1742ca13176464adb3cb66050c00787bb3a4eead37e985f2df1e37718126",
                             ).unwrap(),
                             vout: 0,
@@ -724,7 +729,7 @@ mod tests {
                     lock_time: 0,
                     input: vec![TxIn {
                         previous_output: OutPoint {
-                            txid: Txid::from_hex(
+                            txid: <Txid as ::std::str::FromStr>::from_str(
                                 "e567952fb6cc33857f392efa3a46c995a28f69cca4bb1b37e0204dab1ec7a389",
                             ).unwrap(),
                             vout: 1,
@@ -732,13 +737,13 @@ mod tests {
                         script_sig: hex_script!("160014be18d152a9b012039daf3da7de4f53349eecb985"),
                         sequence: 4294967295,
                         witness: vec![
-                            Vec::from_hex("304402202712be22e0270f394f568311dc7ca9a68970b8025fdd3b240229f07f8a5f3a240220018b38d7dcd314e734c9276bd6fb40f673325bc4baa144c800d2f2f02db2765c01").unwrap(),
-                            Vec::from_hex("03d2e15674941bad4a996372cb87e1856d3652606d98562fe39c5e9e7e413f2105").unwrap(),
+                            hex::decode_to_vec("304402202712be22e0270f394f568311dc7ca9a68970b8025fdd3b240229f07f8a5f3a240220018b38d7dcd314e734c9276bd6fb40f673325bc4baa144c800d2f2f02db2765c01").unwrap(),
+                            hex::decode_to_vec("03d2e15674941bad4a996372cb87e1856d3652606d98562fe39c5e9e7e413f2105").unwrap(),
                         ],
                     },
                     TxIn {
                         previous_output: OutPoint {
-                            txid: Txid::from_hex(
+                            txid: <Txid as ::std::str::FromStr>::from_str(
                                 "b490486aec3ae671012dddb2bb08466bef37720a533a894814ff1da743aaf886",
                             ).unwrap(),
                             vout: 1,
@@ -746,8 +751,8 @@ mod tests {
                         script_sig: hex_script!("160014fe3e9ef1a745e974d902c4355943abcb34bd5353"),
                         sequence: 4294967295,
                         witness: vec![
-                            Vec::from_hex("3045022100d12b852d85dcd961d2f5f4ab660654df6eedcc794c0c33ce5cc309ffb5fce58d022067338a8e0e1725c197fb1a88af59f51e44e4255b20167c8684031c05d1f2592a01").unwrap(),
-                            Vec::from_hex("0223b72beef0965d10be0778efecd61fcac6f79a4ea169393380734464f84f2ab3").unwrap(),
+                            hex::decode_to_vec("3045022100d12b852d85dcd961d2f5f4ab660654df6eedcc794c0c33ce5cc309ffb5fce58d022067338a8e0e1725c197fb1a88af59f51e44e4255b20167c8684031c05d1f2592a01").unwrap(),
+                            hex::decode_to_vec("0223b72beef0965d10be0778efecd61fcac6f79a4ea169393380734464f84f2ab3").unwrap(),
                         ],
                     }],
                     output: vec![
@@ -775,7 +780,8 @@ mod tests {
         unserialized.inputs[0].hash160_preimages = hash160_preimages;
         unserialized.inputs[0].sha256_preimages = sha256_preimages;
 
-        let rtt : PartiallySignedTransaction = hex_psbt!(&serialize_hex(&unserialized)).unwrap();
+        let serialized = serialize_hex(&unserialized).unwrap();
+        let rtt : PartiallySignedTransaction = hex_psbt!(&serialized).unwrap();
         assert_eq!(rtt, unserialized);
 
         // Now add an ripemd160 with incorrect preimage
@@ -784,7 +790,8 @@ mod tests {
         unserialized.inputs[0].ripemd160_preimages = ripemd160_preimages;
 
         // Now the roundtrip should fail as the preimage is incorrect.
-        let rtt : Result<PartiallySignedTransaction, _> = hex_psbt!(&serialize_hex(&unserialized));
+        let serialized = serialize_hex(&unserialized).unwrap();
+        let rtt : Result<PartiallySignedTransaction, _> = hex_psbt!(&serialized);
         assert!(rtt.is_err());
     }
 }

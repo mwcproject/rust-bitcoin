@@ -1,15 +1,13 @@
-extern crate bitcoin;
-
 use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpStream};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{env, process};
 use std::io::Write;
 
-use bitcoin::consensus::encode;
-use bitcoin::network::{address, constants, message, message_network};
-use bitcoin::network::stream_reader::StreamReader;
-use bitcoin::secp256k1;
-use bitcoin::secp256k1::rand::Rng;
+use mwc_bitcoin::consensus::encode;
+use mwc_bitcoin::network::{address, constants, message, message_network};
+use mwc_bitcoin::network::stream_reader::StreamReader;
+use mwc_bitcoin::secp256k1;
+use mwc_bitcoin::secp256k1::rand::{TryRng, rngs::SysRng};
 
 fn main() {
     // This example establishes a connection to a Bitcoin node, sends the intial
@@ -27,7 +25,13 @@ fn main() {
         process::exit(1);
     });
 
-    let version_message = build_version_message(address);
+    let version_message = match build_version_message(address) {
+        Ok(version_message) => version_message,
+        Err(error) => {
+            eprintln!("Error generating version nonce: {:?}", error);
+            process::exit(1);
+        }
+    };
 
     let first_message = message::RawNetworkMessage {
         magic: constants::Network::Bitcoin.magic(),
@@ -36,7 +40,17 @@ fn main() {
 
     if let Ok(mut stream) = TcpStream::connect(address) {
         // Send the message
-        let _ = stream.write_all(encode::serialize(&first_message).as_slice());
+        let first_message = match encode::serialize(&first_message) {
+            Ok(first_message) => first_message,
+            Err(error) => {
+                eprintln!("Error serializing version message: {:?}", error);
+                return;
+            }
+        };
+        if let Err(error) = stream.write_all(first_message.as_slice()) {
+            eprintln!("Error sending version message: {:?}", error);
+            return;
+        }
         println!("Sent version message");
 
         // Setup StreamReader
@@ -54,7 +68,17 @@ fn main() {
                         payload: message::NetworkMessage::Verack,
                     };
 
-                    let _ = stream.write_all(encode::serialize(&second_message).as_slice());
+                    let second_message = match encode::serialize(&second_message) {
+                        Ok(second_message) => second_message,
+                        Err(error) => {
+                            eprintln!("Error serializing verack message: {:?}", error);
+                            return;
+                        }
+                    };
+                    if let Err(error) = stream.write_all(second_message.as_slice()) {
+                        eprintln!("Error sending verack message: {:?}", error);
+                        return;
+                    }
                     println!("Sent verack message");
                 }
                 message::NetworkMessage::Verack => {
@@ -67,13 +91,15 @@ fn main() {
                 }
             }
         }
-        let _ = stream.shutdown(Shutdown::Both);
+        if let Err(error) = stream.shutdown(Shutdown::Both) {
+            eprintln!("Error closing connection: {:?}", error);
+        }
     } else {
         eprintln!("Failed to open connection");
     }
 }
 
-fn build_version_message(address: SocketAddr) -> message::NetworkMessage {
+fn build_version_message(address: SocketAddr) -> Result<message::NetworkMessage, secp256k1::rand::rngs::SysError> {
     // Building version message, see https://en.bitcoin.it/wiki/Protocol_documentation#version
     let my_address = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0);
 
@@ -93,7 +119,7 @@ fn build_version_message(address: SocketAddr) -> message::NetworkMessage {
     let addr_from = address::Address::new(&my_address, constants::ServiceFlags::NONE);
 
     // "Node random nonce, randomly generated every time a version packet is sent. This nonce is used to detect connections to self."
-    let nonce: u64 = secp256k1::rand::thread_rng().gen();
+    let nonce: u64 = SysRng.try_next_u64()?;
 
     // "User Agent (0x00 if string is 0 bytes long)"
     let user_agent = String::from("rust-example");
@@ -102,7 +128,7 @@ fn build_version_message(address: SocketAddr) -> message::NetworkMessage {
     let start_height: i32 = 0;
 
     // Construct the message
-    message::NetworkMessage::Version(message_network::VersionMessage::new(
+    Ok(message::NetworkMessage::Version(message_network::VersionMessage::new(
         services,
         timestamp as i64,
         addr_recv,
@@ -110,5 +136,5 @@ fn build_version_message(address: SocketAddr) -> message::NetworkMessage {
         nonce,
         user_agent,
         start_height,
-    ))
+    )))
 }

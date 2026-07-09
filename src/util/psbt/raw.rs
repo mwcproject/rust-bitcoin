@@ -19,9 +19,9 @@
 
 use std::{fmt, io};
 
-use consensus::encode::{self, ReadExt, WriteExt, Decodable, Encodable, VarInt, serialize, deserialize, MAX_VEC_SIZE};
-use hashes::hex;
-use util::psbt::Error;
+use crate::consensus::encode::{self, ReadExt, WriteExt, Decodable, Encodable, VarInt, serialize, deserialize, MAX_VEC_SIZE};
+use crate::hashes::hex;
+use crate::util::psbt::Error;
 
 /// A PSBT key in its raw byte form.
 #[derive(Debug, PartialEq, Hash, Eq, Clone, Ord, PartialOrd)]
@@ -30,7 +30,7 @@ pub struct Key {
     /// The type of this PSBT key.
     pub type_value: u8,
     /// The key itself in raw byte form.
-    #[cfg_attr(feature = "serde", serde(with = "::serde_utils::hex_bytes"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::hex_bytes"))]
     pub key: Vec<u8>,
 }
 
@@ -41,7 +41,7 @@ pub struct Pair {
     /// The key of this key-value pair.
     pub key: Key,
     /// The value of this key-value pair in raw byte form.
-    #[cfg_attr(feature = "serde", serde(with = "::serde_utils::hex_bytes"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::hex_bytes"))]
     pub value: Vec<u8>,
 }
 
@@ -55,19 +55,20 @@ pub type ProprietaryType = u8;
 pub struct ProprietaryKey<Subtype = ProprietaryType> where Subtype: Copy + From<u8> + Into<u8> {
     /// Proprietary type prefix used for grouping together keys under some
     /// application and avoid namespace collision
-    #[cfg_attr(feature = "serde", serde(with = "::serde_utils::hex_bytes"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::hex_bytes"))]
     pub prefix: Vec<u8>,
     /// Custom proprietary subtype
     pub subtype: Subtype,
     /// Additional key bytes (like serialized public key data etc)
-    #[cfg_attr(feature = "serde", serde(with = "::serde_utils::hex_bytes"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::hex_bytes"))]
     pub key: Vec<u8>,
 }
 
 impl fmt::Display for Key {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use hex::DisplayHex;
         write!(f, "type: {:#x}, key: ", self.type_value)?;
-        hex::format_hex(&self.key[..], f)
+        fmt::Display::fmt(&self.key.as_hex(), f)
     }
 }
 
@@ -83,7 +84,10 @@ impl Decodable for Key {
 
         if key_byte_size > MAX_VEC_SIZE as u64 {
             return Err(encode::Error::OversizedVectorAllocation {
-                requested: key_byte_size as usize,
+                requested: match usize::try_from(key_byte_size) {
+                    Ok(key_byte_size) => key_byte_size,
+                    Err(_) => usize::MAX,
+                },
                 max: MAX_VEC_SIZE,
             })
         }
@@ -107,13 +111,19 @@ impl Encodable for Key {
         &self,
         mut s: S,
     ) -> Result<usize, io::Error> {
-        let mut len = 0;
-        len += VarInt((self.key.len() + 1) as u64).consensus_encode(&mut s)?;
+        let mut len: usize = 0;
+        let key_len = self.key.len().checked_add(1)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "key length overflow"))?;
+        let key_len = key_len as u64;
+        len = len.checked_add(VarInt(key_len).consensus_encode(&mut s)?)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "encoded length overflow"))?;
 
-        len += self.type_value.consensus_encode(&mut s)?;
+        len = len.checked_add(self.type_value.consensus_encode(&mut s)?)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "encoded length overflow"))?;
 
         for key in &self.key {
-            len += key.consensus_encode(&mut s)?
+            len = len.checked_add(key.consensus_encode(&mut s)?)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "encoded length overflow"))?;
         }
 
         Ok(len)
@@ -126,7 +136,8 @@ impl Encodable for Pair {
         mut s: S,
     ) -> Result<usize, io::Error> {
         let len = self.key.consensus_encode(&mut s)?;
-        Ok(len + self.value.consensus_encode(s)?)
+        len.checked_add(self.value.consensus_encode(s)?)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "encoded length overflow"))
     }
 }
 
@@ -141,9 +152,12 @@ impl Decodable for Pair {
 
 impl<Subtype> Encodable for ProprietaryKey<Subtype> where Subtype: Copy + From<u8> + Into<u8> {
     fn consensus_encode<W: io::Write>(&self, mut e: W) -> Result<usize, io::Error> {
-        let mut len = self.prefix.consensus_encode(&mut e)? + 1;
+        let mut len = self.prefix.consensus_encode(&mut e)?
+            .checked_add(1)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "encoded length overflow"))?;
         e.emit_u8(self.subtype.into())?;
-        len += e.write(&self.key)?;
+        len = len.checked_add(e.write(&self.key)?)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "encoded length overflow"))?;
         Ok(len)
     }
 }
@@ -175,10 +189,11 @@ impl<Subtype> ProprietaryKey<Subtype> where Subtype: Copy + From<u8> + Into<u8> 
     }
 
     /// Constructs full [Key] corresponding to this proprietary key type
-    pub fn to_key(&self) -> Key {
-        Key {
+    pub fn to_key(&self) -> io::Result<Key> {
+        Ok(Key {
             type_value: 0xFC,
             key: serialize(self)
-        }
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?,
+        })
     }
 }

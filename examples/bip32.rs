@@ -1,15 +1,13 @@
-extern crate bitcoin;
-
 use std::{env, process};
 use std::str::FromStr;
 
-use bitcoin::secp256k1::Secp256k1;
-use bitcoin::util::key::PrivateKey;
-use bitcoin::util::bip32::ExtendedPrivKey;
-use bitcoin::util::bip32::ExtendedPubKey;
-use bitcoin::util::bip32::DerivationPath;
-use bitcoin::util::bip32::ChildNumber;
-use bitcoin::util::address::Address;
+use mwc_bitcoin::secp256k1::Secp256k1;
+use mwc_bitcoin::util::key::PrivateKey;
+use mwc_bitcoin::util::bip32::ExtendedPrivKey;
+use mwc_bitcoin::util::bip32::ExtendedPubKey;
+use mwc_bitcoin::util::bip32::DerivationPath;
+use mwc_bitcoin::util::bip32::ChildNumber;
+use mwc_bitcoin::util::address::Address;
 
 fn main() {
     // This example derives root xprv
@@ -26,7 +24,7 @@ fn main() {
         process::exit(1);
     }
 
-    let secp = Secp256k1::new();
+    let secp = Secp256k1::new().unwrap();
 
     let wif = PrivateKey::from_wif(&secp, &args[1]).unwrap();
     println!("Seed WIF: {}", wif);
@@ -38,7 +36,7 @@ fn main() {
     let seed = wif.to_bytes();
 
     // we need secp256k1 context for key derivation
-    let secp = Secp256k1::new();
+    let secp = Secp256k1::new().unwrap();
 
     // calculate root key from seed
     let root = ExtendedPrivKey::new_master(&secp, network, &seed).unwrap();
@@ -48,7 +46,7 @@ fn main() {
     let path = DerivationPath::from_str("m/84h/0h/0h").unwrap();
     let child = root.derive_priv(&secp, &path).unwrap();
     println!("Child at {}: {}", path, child);
-    let xpub = ExtendedPubKey::from_private(&secp, &child);
+    let xpub = ExtendedPubKey::from_private(&secp, &child).unwrap();
     println!("Public key at {}: {}", path, xpub);
 
     // generate first receiving address at m/0/0

@@ -21,12 +21,12 @@
 use std::io;
 use std::borrow::Cow;
 
-use network::address::Address;
-use network::constants::{self, ServiceFlags};
-use consensus::{Encodable, Decodable, ReadExt};
-use consensus::encode;
-use network::message::CommandString;
-use hashes::sha256d;
+use crate::network::address::Address;
+use crate::network::constants::{self, ServiceFlags};
+use crate::consensus::{Encodable, Decodable, ReadExt};
+use crate::consensus::encode;
+use crate::network::message::CommandString;
+use crate::hashes::sha256d;
 
 /// Some simple messages
 
@@ -147,15 +147,15 @@ impl_consensus_encoding!(Reject, message, ccode, reason, hash);
 mod tests {
     use super::VersionMessage;
 
-    use hashes::hex::FromHex;
-    use network::constants::ServiceFlags;
+    use crate::hashes::hex;
+    use crate::network::constants::ServiceFlags;
 
-    use consensus::encode::{deserialize, serialize};
+    use crate::consensus::encode::{deserialize, serialize};
 
     #[test]
     fn version_message_test() {
         // This message is from my satoshi node, morning of May 27 2014
-        let from_sat = Vec::from_hex("721101000100000000000000e6e0845300000000010000000000000000000000000000000000ffff0000000000000100000000000000fd87d87eeb4364f22cf54dca59412db7208d47d920cffce83ee8102f5361746f7368693a302e392e39392f2c9f040001").unwrap();
+        let from_sat = hex::decode_to_vec("721101000100000000000000e6e0845300000000010000000000000000000000000000000000ffff0000000000000100000000000000fd87d87eeb4364f22cf54dca59412db7208d47d920cffce83ee8102f5361746f7368693a302e392e39392f2c9f040001").unwrap();
 
         let decode: Result<VersionMessage, _> = deserialize(&from_sat);
         assert!(decode.is_ok());
@@ -169,6 +169,6 @@ mod tests {
         assert_eq!(real_decode.start_height, 302892);
         assert_eq!(real_decode.relay, true);
 
-        assert_eq!(serialize(&real_decode), from_sat);
+        assert_eq!(serialize(&real_decode).unwrap(), from_sat);
     }
 }

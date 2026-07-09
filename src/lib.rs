@@ -67,32 +67,32 @@ pub mod util;
 pub mod consensus;
 pub mod hash_types;
 
-pub use hash_types::*;
-pub use blockdata::block::Block;
-pub use blockdata::block::BlockHeader;
-pub use blockdata::script::Script;
-pub use blockdata::transaction::Transaction;
-pub use blockdata::transaction::TxIn;
-pub use blockdata::transaction::TxOut;
-pub use blockdata::transaction::OutPoint;
-pub use blockdata::transaction::SigHashType;
-pub use consensus::encode::VarInt;
-pub use network::constants::Network;
-pub use util::Error;
-pub use util::address::Address;
-pub use util::address::AddressType;
-pub use util::amount::Amount;
-pub use util::amount::Denomination;
-pub use util::amount::SignedAmount;
-pub use util::key::PrivateKey;
-pub use util::key::PublicKey;
-pub use util::merkleblock::MerkleBlock;
+pub use crate::hash_types::*;
+pub use crate::blockdata::block::Block;
+pub use crate::blockdata::block::BlockHeader;
+pub use crate::blockdata::script::Script;
+pub use crate::blockdata::transaction::Transaction;
+pub use crate::blockdata::transaction::TxIn;
+pub use crate::blockdata::transaction::TxOut;
+pub use crate::blockdata::transaction::OutPoint;
+pub use crate::blockdata::transaction::SigHashType;
+pub use crate::consensus::encode::VarInt;
+pub use crate::network::constants::Network;
+pub use crate::util::Error;
+pub use crate::util::address::Address;
+pub use crate::util::address::AddressType;
+pub use crate::util::amount::Amount;
+pub use crate::util::amount::Denomination;
+pub use crate::util::amount::SignedAmount;
+pub use crate::util::key::PrivateKey;
+pub use crate::util::key::PublicKey;
+pub use crate::util::merkleblock::MerkleBlock;
 
 #[cfg(all(test, feature = "unstable"))] use tests::EmptyWrite;
 
 #[cfg(all(test, feature = "unstable"))]
 mod tests {
-    use hashes::core::fmt::Arguments;
+    use std::fmt::Arguments;
     use std::io::{IoSlice, Result, Write};
 
     #[derive(Default, Clone, Debug, PartialEq, Eq)]

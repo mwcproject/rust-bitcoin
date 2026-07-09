@@ -15,11 +15,9 @@
 use std::error;
 use std::fmt;
 
-use blockdata::transaction::Transaction;
-use consensus::encode;
-use util::psbt::raw;
-
-use hashes;
+use crate::blockdata::transaction::Transaction;
+use crate::consensus::encode;
+use crate::util::psbt::raw;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 /// Enum for marking psbt hash error
@@ -61,8 +59,13 @@ pub enum Error {
     },
     /// Unable to parse as a standard SigHash type.
     NonStandardSigHashType(u32),
-    /// Parsing errors from bitcoin_hashes
-    HashParseError(hashes::Error),
+    /// Hash bytes had an unexpected length.
+    InvalidHashLength {
+        /// Expected byte length.
+        expected: usize,
+        /// Actual byte length.
+        actual: usize,
+    },
     /// The pre-image must hash to the correponding psbt hash
     InvalidPreimageHashPair {
         /// Hash-type
@@ -84,7 +87,10 @@ impl fmt::Display for Error {
             Error::InvalidKey(ref rkey) => write!(f, "invalid key: {}", rkey),
             Error::InvalidProprietaryKey => write!(f, "non-proprietary key type found when proprietary key was expected"),
             Error::DuplicateKey(ref rkey) => write!(f, "duplicate key: {}", rkey),
-            Error::UnexpectedUnsignedTx { expected: ref e, actual: ref a } => write!(f, "different unsigned transaction: expected {}, actual {}", e.txid(), a.txid()),
+            Error::UnexpectedUnsignedTx { expected: ref e, actual: ref a } => match (e.txid(), a.txid()) {
+                (Ok(expected), Ok(actual)) => write!(f, "different unsigned transaction: expected {}, actual {}", expected, actual),
+                (expected, actual) => write!(f, "different unsigned transaction: expected {:?}, actual {:?}", expected, actual),
+            },
             Error::NonStandardSigHashType(ref sht) => write!(f, "non-standard sighash type: {}", sht),
             Error::InvalidMagic => f.write_str("invalid magic"),
             Error::InvalidSeparator => f.write_str("invalid separator"),
@@ -94,7 +100,9 @@ impl fmt::Display for Error {
                 f.write_str("partially signed transactions must have an unsigned transaction")
             }
             Error::NoMorePairs => f.write_str("no more key-value pairs for this psbt map"),
-            Error::HashParseError(e) => write!(f, "Hash Parse Error: {}", e),
+            Error::InvalidHashLength { expected, actual } => {
+                write!(f, "invalid hash length {}; expected {}", actual, expected)
+            }
             Error::InvalidPreimageHashPair{ref preimage, ref hash, ref hash_type} => {
                 // directly using debug forms of psbthash enums
                 write!(f, "Preimage {:?} does not match {:?} hash {:?}", preimage, hash_type, hash )
@@ -106,13 +114,6 @@ impl fmt::Display for Error {
 }
 
 impl error::Error for Error {}
-
-#[doc(hidden)]
-impl From<hashes::Error> for Error {
-    fn from(e: hashes::Error) -> Error {
-        Error::HashParseError(e)
-    }
-}
 
 impl From<encode::Error> for Error {
     fn from(err: encode::Error) -> Self {

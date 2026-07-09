@@ -5,6 +5,7 @@ use bitcoin::network::constants::Network;
 use bitcoin::blockdata::script;
 use bitcoin::consensus::encode;
 
+#[cfg_attr(not(any(feature = "afl", feature = "honggfuzz", test)), allow(dead_code))]
 fn do_test(data: &[u8]) {
     let s: Result<script::Script, _> = encode::deserialize(data);
     if let Ok(script) = s {
@@ -23,22 +24,24 @@ fn do_test(data: &[u8]) {
                     // others it'll just reserialize them as pushes.)
                     if bytes.len() == 1 && bytes[0] != 0x80 && bytes[0] != 0x00 {
                         if let Ok(num) = script::read_scriptint(bytes) {
-                            b = b.push_int(num);
+                            b = b.push_int(num).unwrap();
                         } else {
-                            b = b.push_slice(bytes);
+                            b = b.push_slice(bytes).unwrap();
                         }
                     } else {
-                        b = b.push_slice(bytes);
+                        b = b.push_slice(bytes).unwrap();
                     }
                 }
             }
         }
         assert_eq!(b.into_script(), script);
-        assert_eq!(data, &encode::serialize(&script)[..]);
+        let serialized = encode::serialize(&script).unwrap();
+        assert_eq!(data, &serialized[..]);
 
         // Check if valid address and if that address roundtrips.
-        if let Some(addr) = Address::from_script(&script, Network::Bitcoin) {
-            assert_eq!(addr.script_pubkey(), script);
+        if let Some(addr) = Address::new_btc().from_script(&script, Network::Bitcoin) {
+            let script_pubkey = addr.script_pubkey().unwrap();
+            assert_eq!(script_pubkey, script);
         }
     }
 }
@@ -61,6 +64,11 @@ fn main() {
             do_test(data);
         });
     }
+}
+
+#[cfg(not(any(feature = "afl", feature = "honggfuzz")))]
+fn main() {
+    panic!("not implemented");
 }
 
 #[cfg(test)]

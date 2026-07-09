@@ -14,7 +14,7 @@
 //! Taproot
 //!
 
-use hashes::{sha256, sha256t, Hash};
+use crate::hashes::{sha256, sha256t};
 
 /// The SHA-256 midstate value for the TapLeaf hash.
 const MIDSTATE_TAPLEAF: [u8; 32] = [
@@ -51,70 +51,97 @@ macro_rules! sha256t_hash_newtype {
         pub struct $tag;
 
         impl sha256t::Tag for $tag {
-            fn engine() -> sha256::HashEngine {
-                let midstate = sha256::Midstate::from_inner($midstate);
-                sha256::HashEngine::from_midstate(midstate, $midstate_len)
+            const MIDSTATE: sha256::Midstate = sha256::Midstate::new($midstate, $midstate_len);
+        }
+
+        impl $tag {
+            /// Constructs a tagged hash engine.
+            pub fn engine() -> sha256t::HashEngine<$tag> {
+                sha256t::Hash::<$tag>::engine()
             }
         }
 
-        hash_newtype!($newtype, sha256t::Hash<$tag>, 32, $docs, $reverse);
+        hash_newtype! {
+            #[$docs]
+            #[hash_newtype(backward)]
+            pub struct $newtype(pub sha256t::Hash<$tag>);
+        }
+        impl_hex_for_newtype!($newtype);
     };
 }
 
 // Currently all taproot hashes are defined as being displayed backwards,
 // but that can be specified individually per hash.
 sha256t_hash_newtype!(TapLeafHash, TapLeafTag, MIDSTATE_TAPLEAF, 64,
-    doc="Taproot-tagged hash for tapscript Merkle tree leafs", true
+    doc = "Taproot-tagged hash for tapscript Merkle tree leafs", true
 );
 sha256t_hash_newtype!(TapBranchHash, TapBranchTag, MIDSTATE_TAPBRANCH, 64,
-    doc="Taproot-tagged hash for tapscript Merkle tree branches", true
+    doc = "Taproot-tagged hash for tapscript Merkle tree branches", true
 );
 sha256t_hash_newtype!(TapTweakHash, TapTweakTag, MIDSTATE_TAPTWEAK, 64,
-    doc="Taproot-tagged hash for public key tweaks", true
+    doc = "Taproot-tagged hash for public key tweaks", true
 );
 sha256t_hash_newtype!(TapSighashHash, TapSighashTag, MIDSTATE_TAPSIGHASH, 64,
-    doc="Taproot-tagged hash for the taproot signature hash", true
+    doc = "Taproot-tagged hash for the taproot signature hash", true
 );
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use hashes::hex::ToHex;
-    use hashes::sha256t::Tag;
-    use hashes::{sha256, Hash, HashEngine};
+    use crate::hashes::{HashEngine, sha256};
 
     fn tag_engine(tag_name: &str) -> sha256::HashEngine {
         let mut engine = sha256::Hash::engine();
         let tag_hash = sha256::Hash::hash(tag_name.as_bytes());
-        engine.input(&tag_hash[..]);
-        engine.input(&tag_hash[..]);
+        engine.input(tag_hash.as_ref());
+        engine.input(tag_hash.as_ref());
         engine
+    }
+
+    fn midstate_bytes(engine: sha256::HashEngine) -> [u8; 32] {
+        engine
+            .midstate()
+            .unwrap()
+            .to_parts()
+            .0
     }
 
     #[test]
     fn test_midstates() {
         // check midstate against hard-coded values
-        assert_eq!(MIDSTATE_TAPLEAF, tag_engine("TapLeaf").midstate().into_inner());
-        assert_eq!(MIDSTATE_TAPBRANCH, tag_engine("TapBranch").midstate().into_inner());
-        assert_eq!(MIDSTATE_TAPTWEAK, tag_engine("TapTweak").midstate().into_inner());
-        assert_eq!(MIDSTATE_TAPSIGHASH, tag_engine("TapSighash").midstate().into_inner());
+        assert_eq!(MIDSTATE_TAPLEAF, midstate_bytes(tag_engine("TapLeaf")));
+        assert_eq!(MIDSTATE_TAPBRANCH, midstate_bytes(tag_engine("TapBranch")));
+        assert_eq!(MIDSTATE_TAPTWEAK, midstate_bytes(tag_engine("TapTweak")));
+        assert_eq!(MIDSTATE_TAPSIGHASH, midstate_bytes(tag_engine("TapSighash")));
 
         // test that engine creation roundtrips
-        assert_eq!(tag_engine("TapLeaf").midstate(), TapLeafTag::engine().midstate());
-        assert_eq!(tag_engine("TapBranch").midstate(), TapBranchTag::engine().midstate());
-        assert_eq!(tag_engine("TapTweak").midstate(), TapTweakTag::engine().midstate());
-        assert_eq!(tag_engine("TapSighash").midstate(), TapSighashTag::engine().midstate());
+        assert_eq!(tag_engine("TapLeaf").midstate().unwrap(), <TapLeafTag as sha256t::Tag>::MIDSTATE);
+        assert_eq!(tag_engine("TapBranch").midstate().unwrap(), <TapBranchTag as sha256t::Tag>::MIDSTATE);
+        assert_eq!(tag_engine("TapTweak").midstate().unwrap(), <TapTweakTag as sha256t::Tag>::MIDSTATE);
+        assert_eq!(tag_engine("TapSighash").midstate().unwrap(), <TapSighashTag as sha256t::Tag>::MIDSTATE);
 
         // check that hash creation is the same as building into the same engine
         fn empty_hash(tag_name: &str) -> [u8; 32] {
             let mut e = tag_engine(tag_name);
             e.input(&[]);
-            sha256::Hash::from_engine(e).into_inner()
+            sha256::Hash::from_engine(e).to_byte_array()
         }
-        assert_eq!(empty_hash("TapLeaf"), TapLeafHash::hash(&[]).into_inner());
-        assert_eq!(empty_hash("TapBranch"), TapBranchHash::hash(&[]).into_inner());
-        assert_eq!(empty_hash("TapTweak"), TapTweakHash::hash(&[]).into_inner());
-        assert_eq!(empty_hash("TapSighash"), TapSighashHash::hash(&[]).into_inner());
+        assert_eq!(
+            empty_hash("TapLeaf"),
+            sha256t::Hash::<TapLeafTag>::hash(&[]).to_byte_array()
+        );
+        assert_eq!(
+            empty_hash("TapBranch"),
+            sha256t::Hash::<TapBranchTag>::hash(&[]).to_byte_array()
+        );
+        assert_eq!(
+            empty_hash("TapTweak"),
+            sha256t::Hash::<TapTweakTag>::hash(&[]).to_byte_array()
+        );
+        assert_eq!(
+            empty_hash("TapSighash"),
+            sha256t::Hash::<TapSighashTag>::hash(&[]).to_byte_array()
+        );
     }
 
     #[test]
@@ -125,19 +152,27 @@ mod test {
         //   CHashWriter writer = HasherTapLeaf;
         //   writer.GetSHA256().GetHex()
         assert_eq!(
-            TapLeafHash::from_engine(TapLeafTag::engine()).to_hex(),
+            TapLeafHash::from_byte_array(
+                sha256t::Hash::<TapLeafTag>::from_engine(TapLeafTag::engine()).to_byte_array()
+            ).to_string(),
             "cbfa0621df37662ca57697e5847b6abaf92934a1a5624916f8d177a388c21252"
         );
         assert_eq!(
-            TapBranchHash::from_engine(TapBranchTag::engine()).to_hex(),
+            TapBranchHash::from_byte_array(
+                sha256t::Hash::<TapBranchTag>::from_engine(TapBranchTag::engine()).to_byte_array()
+            ).to_string(),
             "dffd9fbe4c21c893fa934f8774eda0e1efdc06f52ffbf5c1533c6f4dec73c353"
         );
         assert_eq!(
-            TapTweakHash::from_engine(TapTweakTag::engine()).to_hex(),
+            TapTweakHash::from_byte_array(
+                sha256t::Hash::<TapTweakTag>::from_engine(TapTweakTag::engine()).to_byte_array()
+            ).to_string(),
             "e4156b45ff9b277dd92a042af9eed8c91f1d037f68f0d6b20001ab749422a48a"
         );
         assert_eq!(
-            TapSighashHash::from_engine(TapSighashTag::engine()).to_hex(),
+            TapSighashHash::from_byte_array(
+                sha256t::Hash::<TapSighashTag>::from_engine(TapSighashTag::engine()).to_byte_array()
+            ).to_string(),
             "03c8b9d47cdb5f7bf924e282ce99ba8d2fe581262a04002907d8bc4a9111bcda"
         );
 
@@ -147,19 +182,24 @@ mod test {
         //   writer.GetSHA256().GetHex()
         // Note that Core writes the 0 length prefix when an empty vector is written.
         assert_eq!(
-            TapLeafHash::hash(&[0]).to_hex(),
+            TapLeafHash::from_byte_array(sha256t::Hash::<TapLeafTag>::hash(&[0]).to_byte_array())
+                .to_string(),
             "29589d5122ec666ab5b4695070b6debc63881a4f85d88d93ddc90078038213ed"
         );
         assert_eq!(
-            TapBranchHash::hash(&[0]).to_hex(),
+            TapBranchHash::from_byte_array(sha256t::Hash::<TapBranchTag>::hash(&[0]).to_byte_array())
+                .to_string(),
             "1deb45569eb6b2da88b5c2ab46d6a64ab08d58a2fdd5f75a24e6c760194b5392"
         );
         assert_eq!(
-            TapTweakHash::hash(&[0]).to_hex(),
+            TapTweakHash::from_byte_array(sha256t::Hash::<TapTweakTag>::hash(&[0]).to_byte_array())
+                .to_string(),
             "1eea90d42a359c89bbf702ddf6bde140349e95b9e8036ff1c37f04e6b53787cd"
         );
         assert_eq!(
-            TapSighashHash::hash(&[0]).to_hex(),
+            TapSighashHash::from_byte_array(
+                sha256t::Hash::<TapSighashTag>::hash(&[0]).to_byte_array()
+            ).to_string(),
             "cd10c023c300fb9a507dff136370fba1d8a0566667cfafc4099a8803e00dfdc2"
         );
     }

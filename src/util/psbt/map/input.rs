@@ -15,17 +15,17 @@
 use std::io;
 use std::collections::btree_map::{BTreeMap, Entry};
 
-use blockdata::script::Script;
-use blockdata::transaction::{SigHashType, Transaction, TxOut};
-use consensus::encode;
-use util::bip32::KeySource;
-use hashes::{self, hash160, ripemd160, sha256, sha256d};
-use util::key::PublicKey;
-use util::psbt;
-use util::psbt::map::Map;
-use util::psbt::raw;
-use util::psbt::serialize::Deserialize;
-use util::psbt::{Error, error};
+use crate::blockdata::script::Script;
+use crate::blockdata::transaction::{SigHashType, Transaction, TxOut};
+use crate::consensus::encode;
+use crate::util::bip32::KeySource;
+use crate::hashes::{self, hash160, ripemd160, sha256, sha256d};
+use crate::util::key::PublicKey;
+use crate::util::psbt;
+use crate::util::psbt::map::Map;
+use crate::util::psbt::raw;
+use crate::util::psbt::serialize::Deserialize;
+use crate::util::psbt::{Error, error};
 
 /// Type: Non-Witness UTXO PSBT_IN_NON_WITNESS_UTXO = 0x00
 const PSBT_IN_NON_WITNESS_UTXO: u8 = 0x00;
@@ -71,7 +71,7 @@ pub struct Input {
     pub witness_utxo: Option<TxOut>,
     /// A map from public keys to their corresponding signature as would be
     /// pushed to the stack from a scriptSig or witness.
-    #[cfg_attr(feature = "serde", serde(with = "::serde_utils::btreemap_byte_values"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::btreemap_byte_values"))]
     pub partial_sigs: BTreeMap<PublicKey, Vec<u8>>,
     /// The sighash type to be used for this input. Signatures for this input
     /// must use the sighash type.
@@ -82,7 +82,7 @@ pub struct Input {
     pub witness_script: Option<Script>,
     /// A map from public keys needed to sign this input to their corresponding
     /// master key fingerprints and derivation paths.
-    #[cfg_attr(feature = "serde", serde(with = "::serde_utils::btreemap_as_seq"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::btreemap_as_seq"))]
     pub bip32_derivation: BTreeMap<PublicKey, KeySource>,
     /// The finalized, fully-constructed scriptSig with signatures and any other
     /// scripts necessary for this input to pass validation.
@@ -92,22 +92,22 @@ pub struct Input {
     pub final_script_witness: Option<Vec<Vec<u8>>>,
     /// TODO: Proof of reserves commitment
     /// RIPEMD160 hash to preimage map
-    #[cfg_attr(feature = "serde", serde(with = "::serde_utils::btreemap_byte_values"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::btreemap_byte_values"))]
     pub ripemd160_preimages: BTreeMap<ripemd160::Hash, Vec<u8>>,
     /// SHA256 hash to preimage map
-    #[cfg_attr(feature = "serde", serde(with = "::serde_utils::btreemap_byte_values"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::btreemap_byte_values"))]
     pub sha256_preimages: BTreeMap<sha256::Hash, Vec<u8>>,
     /// HSAH160 hash to preimage map
-    #[cfg_attr(feature = "serde", serde(with = "::serde_utils::btreemap_byte_values"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::btreemap_byte_values"))]
     pub hash160_preimages: BTreeMap<hash160::Hash, Vec<u8>>,
     /// HAS256 hash to preimage map
-    #[cfg_attr(feature = "serde", serde(with = "::serde_utils::btreemap_byte_values"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::btreemap_byte_values"))]
     pub hash256_preimages: BTreeMap<sha256d::Hash, Vec<u8>>,
     /// Proprietary key-value pairs for this input.
-    #[cfg_attr(feature = "serde", serde(with = "::serde_utils::btreemap_as_seq_byte_values"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::btreemap_as_seq_byte_values"))]
     pub proprietary: BTreeMap<raw::ProprietaryKey, Vec<u8>>,
     /// Unknown key-value pairs for this input.
-    #[cfg_attr(feature = "serde", serde(with = "::serde_utils::btreemap_as_seq_byte_values"))]
+    #[cfg_attr(feature = "serde", serde(with = "crate::serde_utils::btreemap_as_seq_byte_values"))]
     pub unknown: BTreeMap<raw::Key, Vec<u8>>,
 }
 
@@ -165,16 +165,16 @@ impl Map for Input {
                 }
             }
             PSBT_IN_RIPEMD160 => {
-                psbt_insert_hash_pair(&mut self.ripemd160_preimages, raw_key, raw_value, error::PsbtHash::Ripemd)?;
+                psbt_insert_hash_pair(&mut self.ripemd160_preimages, raw_key, raw_value, error::PsbtHash::Ripemd, ripemd160::Hash::hash)?;
             }
             PSBT_IN_SHA256 => {
-                psbt_insert_hash_pair(&mut self.sha256_preimages, raw_key, raw_value, error::PsbtHash::Sha256)?;
+                psbt_insert_hash_pair(&mut self.sha256_preimages, raw_key, raw_value, error::PsbtHash::Sha256, sha256::Hash::hash)?;
             }
             PSBT_IN_HASH160 => {
-                psbt_insert_hash_pair(&mut self.hash160_preimages, raw_key, raw_value, error::PsbtHash::Hash160)?;
+                psbt_insert_hash_pair(&mut self.hash160_preimages, raw_key, raw_value, error::PsbtHash::Hash160, hash160::Hash::hash)?;
             }
             PSBT_IN_HASH256 => {
-                psbt_insert_hash_pair(&mut self.hash256_preimages, raw_key, raw_value, error::PsbtHash::Hash256)?;
+                psbt_insert_hash_pair(&mut self.hash256_preimages, raw_key, raw_value, error::PsbtHash::Hash256, sha256d::Hash::hash)?;
             }
             PSBT_IN_PROPRIETARY => match self.proprietary.entry(raw::ProprietaryKey::from_key(raw_key.clone())?) {
                 ::std::collections::btree_map::Entry::Vacant(empty_key) => {empty_key.insert(raw_value);},
@@ -250,7 +250,7 @@ impl Map for Input {
 
         for (key, value) in self.proprietary.iter() {
             rv.push(raw::Pair {
-                key: key.to_key(),
+                key: key.to_key()?,
                 value: value.clone(),
             });
         }
@@ -298,6 +298,7 @@ fn psbt_insert_hash_pair<H>(
     raw_key: raw::Key,
     raw_value: Vec<u8>,
     hash_type: error::PsbtHash,
+    hash_fn: fn(&[u8]) -> H,
 ) -> Result<(), encode::Error>
 where
     H: hashes::Hash + Deserialize,
@@ -309,10 +310,10 @@ where
     match map.entry(key_val) {
         Entry::Vacant(empty_key) => {
             let val: Vec<u8> = Deserialize::deserialize(&raw_value)?;
-            if <H as hashes::Hash>::hash(&val) != key_val {
+            if hash_fn(&val) != key_val {
                 return Err(psbt::Error::InvalidPreimageHashPair {
                     preimage: val,
-                    hash: Vec::from(key_val.borrow()),
+                    hash: Vec::from(key_val.as_ref()),
                     hash_type: hash_type,
                 }
                 .into());
