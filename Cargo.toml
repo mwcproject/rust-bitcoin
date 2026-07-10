@@ -1,6 +1,6 @@
 [package]
 name = "mwc-bitcoin"
-version = "0.27.1"
+version = "0.27.2"
 authors = ["Andrew Poelstra <apoelstra@wpsoftware.net>"]
 license = "CC0-1.0"
 homepage = "https://github.com/mwcproject/rust-bitcoin"
