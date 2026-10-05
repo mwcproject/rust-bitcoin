@@ -1,6 +1,6 @@
 #!/bin/sh -ex
 
-FEATURES="base64 bitcoinconsensus use-serde"
+FEATURES="base64 use-serde"
 
 if [ "$DO_COV" = true ]
 then
