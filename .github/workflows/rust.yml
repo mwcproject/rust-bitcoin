@@ -4,7 +4,7 @@ name: Continuous integration
 
 jobs:
   Tests:
-    name: Tests
+    name: Tests (${{ matrix.rust }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -21,21 +21,19 @@ jobs:
               DO_FUZZ: true
               DO_BENCH: true
               AS_DEPENDENCY: true
-          - rust: 1.29.0
-            env:
-              AS_DEPENDENCY: true
-              PIN_VERSIONS: true
     steps:
       - name: Install test dependencies
         run: sudo apt-get install -y binutils-dev libunwind8-dev libcurl4-openssl-dev libelf-dev libdw-dev cmake gcc libiberty-dev
       - name: Checkout Crate
         uses: actions/checkout@v2
-      - name: Checkout Toolchain
-        uses: actions-rs/toolchain@v1
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
         with:
-          profile: minimal
           toolchain: ${{ matrix.rust }}
-          override: true
+      - name: Show Rust version
+        run: |
+          rustc --version
+          cargo --version
       - name: Running test script
         env: ${{ matrix.env }}
         run: ./contrib/test.sh
